@@ -62,7 +62,7 @@
 
 // Layout do painel em pixels lógicos (96 DPI)
 #define FW 360
-#define FH 212
+#define FH 290
 #define SL_X0 24
 #define SL_X1 (FW - 74)
 #define SL_CY 70
@@ -72,12 +72,15 @@
 #define TILE_Y 98
 #define TILE_H 40
 #define LABEL_H 22
-#define FOOT_Y 168
+#define WARM_TITLE_Y 168
+#define WARM_CY 214
+#define WARM_COLOR 0xFF9A3C
+#define FOOT_Y 246
 #define BTN 32
 #define GEAR_CX (FW - 36)
 #define POWER_CX (FW - 74)
 
-enum { HIT_NONE, HIT_SLIDER, HIT_POWER, HIT_GEAR, HIT_TILE0 = 16 };
+enum { HIT_NONE, HIT_SLIDER, HIT_WARM, HIT_POWER, HIT_GEAR, HIT_TILE0 = 16 };
 
 typedef struct { uint32_t *px; int w, h; } Buf;
 typedef struct { HWND hwnd; int x, y, w, h; UINT dpi; BOOL in_band; uint32_t *bits; HDC dc; HBITMAP bmp, old; } Overlay;
@@ -96,7 +99,7 @@ static ATOM g_overlay_atom;
 static void update_tray(BOOL force_icon);
 
 // configuração (lembrada no registro)
-static int g_value, g_last_on = 40, g_preset;
+static int g_value, g_last_on = 40, g_preset, g_warm;
 static BOOL g_hide_capture = TRUE;
 
 // tema
@@ -113,7 +116,7 @@ static uint32_t *g_mpx, *g_spx;
 static int g_bw, g_bh;
 static uint32_t *g_tiles[NUM_PRESETS];
 static int g_tile_w, g_tile_h;
-static BOOL g_dragging;
+static int g_dragging; // slider sendo arrastado (HIT_SLIDER/HIT_WARM) ou 0
 static int g_hover;
 static int g_wheel;
 static DWORD g_hidden_at;
@@ -556,6 +559,8 @@ static void update_tray(BOOL force_icon)
         wsprintfW(g_nid.szTip, L"Eye Sight: %s, %d%%", PRESETS[g_preset].name, g_value);
     else
         lstrcpyW(g_nid.szTip, L"Eye Sight: textura desligada");
+    if (g_warm > 0)
+        wsprintfW(g_nid.szTip + lstrlenW(g_nid.szTip), L"\nLuz quente: %d%%", g_warm);
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
@@ -573,6 +578,84 @@ static void add_tray(void)
     g_nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
     update_tray(FALSE);
+}
+
+// ---------------------------------------------------------------- luz quente
+
+// O tom quente usa o filtro de cor de tela cheia da Magnification API (o mesmo dos "Filtros de
+// cor" do Windows): a matriz é aplicada na composição do DWM. A Luz noturna do Windows mexe na
+// tabela de gama da placa de vídeo, que passa a pontilhar os tons e faz o grão piscar.
+typedef struct { float t[5][5]; } MagColorEffect;
+static BOOL(WINAPI *p_MagInitialize)(void);
+static BOOL(WINAPI *p_MagUninitialize)(void);
+static BOOL(WINAPI *p_MagSetFullscreenColorEffect)(MagColorEffect *);
+static BOOL g_mag_on;
+
+// Cor de um corpo negro a k kelvins (aproximação de Tanner Helland), normalizada para 6500 K.
+static void kelvin_rgb(float k, float rgb[3])
+{
+    float t = k / 100.0f;
+    float g = 99.4708f * logf(t) - 161.1196f, g0 = 99.4708f * logf(65.0f) - 161.1196f;
+    float b = t <= 19 ? 0 : 138.5177f * logf(t - 10) - 305.0448f, b0 = 138.5177f * logf(55.0f) - 305.0448f;
+    rgb[0] = 1.0f;
+    rgb[1] = clampf(g / g0, 0, 1);
+    rgb[2] = clampf(b / b0, 0, 1);
+}
+
+// 0..100 -> 6500 K..2000 K, linear em mireds para os passos parecerem iguais (50 ~ 3000 K)
+static float warm_kelvin(int v)
+{
+    float m0 = 1e6f / 6500, m1 = 1e6f / 2000;
+    return 1e6f / (m0 + (m1 - m0) * v / 100.0f);
+}
+
+static void apply_warmth(void)
+{
+    if (!g_mag_on) {
+        if (g_warm == 0)
+            return;
+        if (!p_MagSetFullscreenColorEffect) {
+            HMODULE m = LoadLibraryExW(L"magnification.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!m)
+                return;
+            p_MagInitialize = (BOOL(WINAPI *)(void))(void *)GetProcAddress(m, "MagInitialize");
+            p_MagUninitialize = (BOOL(WINAPI *)(void))(void *)GetProcAddress(m, "MagUninitialize");
+            p_MagSetFullscreenColorEffect =
+                (BOOL(WINAPI *)(MagColorEffect *))(void *)GetProcAddress(m, "MagSetFullscreenColorEffect");
+            if (!p_MagInitialize || !p_MagUninitialize || !p_MagSetFullscreenColorEffect) {
+                p_MagSetFullscreenColorEffect = NULL;
+                return;
+            }
+        }
+        if (!p_MagInitialize())
+            return;
+        g_mag_on = TRUE;
+    }
+    float rgb[3];
+    kelvin_rgb(warm_kelvin(g_warm), rgb);
+    MagColorEffect e = {{{0}}};
+    e.t[0][0] = rgb[0];
+    e.t[1][1] = rgb[1];
+    e.t[2][2] = rgb[2];
+    e.t[3][3] = e.t[4][4] = 1.0f;
+    p_MagSetFullscreenColorEffect(&e);
+    if (g_warm == 0) {
+        p_MagUninitialize();
+        g_mag_on = FALSE;
+    }
+}
+
+static void set_warm(int v)
+{
+    v = v < 0 ? 0 : v > 100 ? 100 : v;
+    if (v == g_warm)
+        return;
+    g_warm = v;
+    apply_warmth();
+    update_tray(FALSE);
+    if (g_fly)
+        InvalidateRect(g_fly, NULL, FALSE);
+    SetTimer(g_main, TIMER_SAVE, 500, NULL);
 }
 
 // ---------------------------------------------------------------- valor
@@ -606,6 +689,7 @@ static void save_config(void)
     cfg_set(L"LastOn", (DWORD)g_last_on);
     cfg_set(L"HideFromCapture", (DWORD)g_hide_capture);
     cfg_set(L"Preset", (DWORD)g_preset);
+    cfg_set(L"Warmth", (DWORD)g_warm);
 }
 
 // ---------------------------------------------------------------- menu
@@ -736,7 +820,25 @@ static void draw_text(Buf *b, float x0, float y0, float x1, float y1, const wcha
         }
 }
 
-static float slider_pos(void) { return SL_X0 + (SL_X1 - SL_X0) * g_value / 100.0f; }
+static void draw_slider(Buf *b, int value, int hit, uint32_t color, uint32_t fg)
+{
+    float s = g_s, cy = (hit == HIT_WARM ? WARM_CY : SL_CY) * s;
+    float x0 = SL_X0 * s, x1 = SL_X1 * s, tx = (SL_X0 + (SL_X1 - SL_X0) * value / 100.0f) * s;
+    fill_capsule(b, x0, x1, cy, 2.0f * s, fg, g_dark ? 0.54f : 0.45f);
+    fill_capsule(b, x0, tx, cy, 2.0f * s, color, 1.0f);
+    if (g_dark)
+        fill_circle(b, tx, cy, 10.0f * s, 0x454545, 1.0f);
+    else {
+        fill_circle(b, tx, cy, 10.5f * s, 0xD0D0D0, 1.0f);
+        fill_circle(b, tx, cy, 10.0f * s, 0xFFFFFF, 1.0f);
+    }
+    float inner = g_dragging == hit ? 5.0f : (g_hover == hit ? 7.0f : 6.0f);
+    fill_circle(b, tx, cy, inner * s, color, 1.0f);
+
+    wchar_t num[8];
+    wsprintfW(num, L"%d", value);
+    draw_text(b, (FW - 66) * s, cy - 18 * s, (FW - 20) * s, cy + 18 * s, num, g_f_value, DT_RIGHT, fg, 1.0f);
+}
 
 static void paint_flyout(HDC hdc)
 {
@@ -766,22 +868,8 @@ static void paint_flyout(HDC hdc)
     draw_grain_icon(&b, 22 * s, 22 * s, 20 * s, fg, 1.0f);
     draw_text(&b, 52 * s, 18 * s, (FW - 20) * s, 46 * s, L"Textura da tela", g_f_title, DT_LEFT, fg, 1.0f);
 
-    // slider
-    float x0 = SL_X0 * s, x1 = SL_X1 * s, cy = SL_CY * s, tx = slider_pos() * s;
-    fill_capsule(&b, x0, x1, cy, 2.0f * s, fg, g_dark ? 0.54f : 0.45f);
-    fill_capsule(&b, x0, tx, cy, 2.0f * s, g_accent, 1.0f);
-    if (g_dark)
-        fill_circle(&b, tx, cy, 10.0f * s, 0x454545, 1.0f);
-    else {
-        fill_circle(&b, tx, cy, 10.5f * s, 0xD0D0D0, 1.0f);
-        fill_circle(&b, tx, cy, 10.0f * s, 0xFFFFFF, 1.0f);
-    }
-    float inner = g_dragging ? 5.0f : (g_hover == HIT_SLIDER ? 7.0f : 6.0f);
-    fill_circle(&b, tx, cy, inner * s, g_accent, 1.0f);
-
-    wchar_t num[8];
-    wsprintfW(num, L"%d", g_value);
-    draw_text(&b, (FW - 66) * s, (SL_CY - 18) * s, (FW - 20) * s, (SL_CY + 18) * s, num, g_f_value, DT_RIGHT, fg, 1.0f);
+    // slider da textura
+    draw_slider(&b, g_value, HIT_SLIDER, g_accent, fg);
 
     // estilos: amostras de papel com a textura de cada predefinição
     int tw = (int)(TILE_W * s + 0.5f), th = (int)(TILE_H * s + 0.5f);
@@ -818,6 +906,15 @@ static void paint_flyout(HDC hdc)
                   DT_CENTER, sel ? g_accent : fg, sel ? 1.0f : 0.85f);
     }
 
+    // luz quente
+    fill_rect(&b, (int)(22 * s), (int)((WARM_TITLE_Y - 2) * s), (int)((FW - 44) * s), s < 1.5f ? 1 : (int)s, fg,
+              g_dark ? 0.08f : 0.07f);
+    draw_text(&b, 18 * s, WARM_TITLE_Y * s, 46 * s, (WARM_TITLE_Y + 28) * s, L"\xE708", g_f_icon, DT_CENTER,
+              g_warm > 0 ? WARM_COLOR : fg, 1.0f);
+    draw_text(&b, 52 * s, WARM_TITLE_Y * s, (FW - 20) * s, (WARM_TITLE_Y + 28) * s, L"Luz quente", g_f_title, DT_LEFT, fg,
+              1.0f);
+    draw_slider(&b, g_warm, HIT_WARM, WARM_COLOR, fg);
+
     // rodapé
     float fcy = (FOOT_Y + (FH - FOOT_Y) / 2.0f) * s;
     draw_text(&b, 22 * s, FOOT_Y * s, (POWER_CX - 24) * s, FH * s, PRESETS[g_preset].desc, g_f_small,
@@ -840,6 +937,8 @@ static int hit_test(float mx, float my)
 {
     if (mx >= SL_X0 - 14 && mx <= SL_X1 + 14 && my >= SL_CY - 18 && my <= SL_CY + 18)
         return HIT_SLIDER;
+    if (mx >= SL_X0 - 14 && mx <= SL_X1 + 14 && my >= WARM_CY - 18 && my <= WARM_CY + 18)
+        return HIT_WARM;
     if (my >= TILE_Y - 3 && my <= TILE_Y + TILE_H + LABEL_H)
         for (int i = 0; i < NUM_PRESETS; i++) {
             float tx0 = TILE_X0 + i * (TILE_W + TILE_GAP);
@@ -856,9 +955,13 @@ static int hit_test(float mx, float my)
     return HIT_NONE;
 }
 
-static int value_from_x(float mx)
+static void drag_to(float mx)
 {
-    return (int)floorf((mx - SL_X0) / (SL_X1 - SL_X0) * 100.0f + 0.5f);
+    int v = (int)floorf((mx - SL_X0) / (SL_X1 - SL_X0) * 100.0f + 0.5f);
+    if (g_dragging == HIT_WARM)
+        set_warm(v);
+    else
+        set_value(v);
 }
 
 static void apply_flyout_theme(void)
@@ -873,7 +976,7 @@ static void hide_flyout(void)
         return;
     KillTimer(g_fly, TIMER_ANIM);
     if (g_dragging) {
-        g_dragging = FALSE;
+        g_dragging = 0;
         ReleaseCapture();
     }
     ShowWindow(g_fly, SW_HIDE);
@@ -952,10 +1055,10 @@ static LRESULT CALLBACK flyout_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONDOWN: {
         float mx = GET_X_LPARAM(lp) / g_s, my = GET_Y_LPARAM(lp) / g_s;
         int hit = hit_test(mx, my);
-        if (hit == HIT_SLIDER) {
-            g_dragging = TRUE;
+        if (hit == HIT_SLIDER || hit == HIT_WARM) {
+            g_dragging = hit;
             SetCapture(hwnd);
-            set_value(value_from_x(mx));
+            drag_to(mx);
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (hit == HIT_POWER) {
             toggle_power();
@@ -971,7 +1074,7 @@ static LRESULT CALLBACK flyout_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MOUSEMOVE: {
         float mx = GET_X_LPARAM(lp) / g_s, my = GET_Y_LPARAM(lp) / g_s;
         if (g_dragging) {
-            set_value(value_from_x(mx));
+            drag_to(mx);
             return 0;
         }
         int hit = hit_test(mx, my);
@@ -989,14 +1092,14 @@ static LRESULT CALLBACK flyout_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_LBUTTONUP:
         if (g_dragging) {
-            g_dragging = FALSE;
+            g_dragging = 0;
             ReleaseCapture();
             InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
     case WM_CAPTURECHANGED:
         if (g_dragging) {
-            g_dragging = FALSE;
+            g_dragging = 0;
             InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
@@ -1005,14 +1108,22 @@ static LRESULT CALLBACK flyout_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_wheel >= WHEEL_DELTA || g_wheel <= -WHEEL_DELTA) {
             int steps = g_wheel / WHEEL_DELTA;
             g_wheel -= steps * WHEEL_DELTA;
-            set_value(g_value + steps * 2);
+            if (g_hover == HIT_WARM)
+                set_warm(g_warm + steps * 2);
+            else
+                set_value(g_value + steps * 2);
         }
         return 0;
     case WM_KEYDOWN:
         switch (wp) {
         case VK_ESCAPE: hide_flyout(); break;
-        case VK_LEFT: case VK_DOWN: set_value(g_value - 1); break;
-        case VK_RIGHT: case VK_UP: set_value(g_value + 1); break;
+        // Shift + setas: luz quente
+        case VK_LEFT: case VK_DOWN:
+            if (GetKeyState(VK_SHIFT) < 0) set_warm(g_warm - 1); else set_value(g_value - 1);
+            break;
+        case VK_RIGHT: case VK_UP:
+            if (GetKeyState(VK_SHIFT) < 0) set_warm(g_warm + 1); else set_value(g_value + 1);
+            break;
         case VK_NEXT: set_value(g_value - 10); break;
         case VK_PRIOR: set_value(g_value + 10); break;
         case VK_HOME: set_value(0); break;
@@ -1103,6 +1214,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return TRUE;
     case WM_DESTROY:
         save_config();
+        if (g_warm > 0) {
+            g_warm = 0;
+            apply_warmth(); // devolve as cores normais
+        }
         Shell_NotifyIconW(NIM_DELETE, &g_nid);
         destroy_overlays();
         PostQuitMessage(0);
@@ -1181,6 +1296,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     g_preset = (int)cfg_get(L"Preset", DEFAULT_PRESET);
     if (g_preset < 0 || g_preset >= NUM_PRESETS)
         g_preset = DEFAULT_PRESET;
+    g_warm = (int)cfg_get(L"Warmth", 0);
+    if (g_warm > 100)
+        g_warm = 0;
     if (startup_enabled() && should_claim_startup())
         apply_startup(TRUE);
     if (first_run)
@@ -1204,6 +1322,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     g_main = CreateWindowExW(WS_EX_TOOLWINDOW, CLS_MAIN, APP_NAME, WS_POPUP, 0, 0, 0, 0, NULL, NULL, inst, NULL);
     create_flyout();
     rebuild_overlays();
+    apply_warmth();
     add_tray();
     SetTimer(g_main, TIMER_TOPMOST, 2000, NULL);
 
