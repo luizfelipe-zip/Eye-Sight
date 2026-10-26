@@ -2,6 +2,15 @@
 
 Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento segue o [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.2.0] - 2026-10-26
+
+### Adicionado
+- Textura no cursor do mouse: os cursores do sistema (seta, texto, mão, redimensionar e outros) ganham o mesmo grão e a mesma intensidade da tela, já que o Windows sempre desenha o cursor por cima de qualquer janela. Dá para desligar no menu, em *Textura no cursor do mouse*. Os cursores originais voltam ao sair do programa.
+
+### Alterado
+- Instalar e desinstalar agora pedem para o Eye Sight fechar sozinho antes de removê-lo, para ele devolver os cursores e as cores normais. O desinstalador também restaura os cursores, caso o programa tenha sido encerrado à força.
+- A descrição de cada release no GitHub vem do changelog.
+
 ## [1.1.0] - 2026-10-26
 
 ### Adicionado
@@ -34,6 +43,7 @@ Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](h
 - Instalador opcional (uiAccess com assinatura local) para a textura cobrir o menu Iniciar e a barra.
 - Build automático e publicação de releases pelo GitHub Actions.
 
+[1.2.0]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.2.0
 [1.1.0]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.1.0
 [1.0.1]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.0.1
 [1.0.0]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.0.0
