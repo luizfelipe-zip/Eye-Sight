@@ -46,6 +46,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release delete "${{ inputs.version }}" --cleanup-tag --yes || true
 
+      - name: Notas da release (seção da versão no CHANGELOG.md)
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
+        run: |
+          v="${{ inputs.version || github.ref_name }}"
+          awk -v v="${v#v}" 'index($0, "## [" v "]") == 1 {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > build/notas.md
+          test -s build/notas.md || echo "Veja o [CHANGELOG](CHANGELOG.md)." > build/notas.md
+          cat >> build/notas.md <<'EOF'
+
+          ---
+          - **Instalar:** baixe `EyeSight-Instalador.zip`, extraia e dê dois cliques em `Instalar.cmd` (pede administrador).
+          - **Remover:** baixe `EyeSight-Desinstalador.zip`, extraia e dê dois cliques em `Desinstalar.cmd`.
+          - Deixe a Luz noturna do Windows desligada e use a Luz quente do Eye Sight no lugar.
+          EOF
+          sed -i 's/^          //' build/notas.md
+          cat build/notas.md
+
       - name: Publicar release
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
         uses: softprops/action-gh-release@v2
@@ -56,4 +72,4 @@ jobs:
           files: |
             build/EyeSight-Instalador.zip
             build/EyeSight-Desinstalador.zip
-          generate_release_notes: true
+          body_path: build/notas.md
