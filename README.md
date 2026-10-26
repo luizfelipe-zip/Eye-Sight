@@ -12,7 +12,7 @@ Fica só na bandeja, como o Twinkle Tray: sem janela na barra de tarefas, sem ap
 Inspirado no "Modo de leitura" dos celulares Poco/Xiaomi: uma camada de grão bem fino sobre a tela que quebra o brilho "plástico" do monitor e deixa a leitura parecida com papel, e uma luz quente opcional para a noite.
 
 - **Só na bandeja.** Um clique no ícone abre um painel com a intensidade da textura, os estilos e a Luz quente.
-- **Cobre tudo**, inclusive o menu Iniciar, a busca e a barra de tarefas.
+- **Cobre tudo**, inclusive o menu Iniciar, a busca, a barra de tarefas e o cursor do mouse.
 - **Luz quente** de 6500 K (cor normal) a 2000 K (âmbar), que substitui a Luz noturna do Windows sem fazer o grão piscar.
 - **Invisível para o resto do sistema.** Não aparece na barra de tarefas, no Alt+Tab nem no Win+Tab, e cliques passam direto pela textura.
 - **Cinco estilos finos**, do mais fino ao mais marcado.
@@ -60,7 +60,7 @@ Requer Windows 10 ou 11 (64 bits). No Windows 11 o painel tem cantos arredondado
 - **Amostras** abaixo do slider (ou teclas **1** a **5**): troca o estilo.
 - **Luz quente** (slider laranja): de 0 (cor normal) a 100 (âmbar); 50 fica perto de 3000 K. Também com a roda do mouse sobre ele ou **Shift + setas**.
 - **Botão de energia** (ou **Espaço**): liga/desliga a textura lembrando a intensidade.
-- **Engrenagem** ou **clique direito** no ícone: menu com *Estilo da textura*, *Iniciar com o Windows*, *Esconder a textura em prints* e *Sair*.
+- **Engrenagem** ou **clique direito** no ícone: menu com *Estilo da textura*, *Iniciar com o Windows*, *Textura no cursor do mouse*, *Esconder a textura em prints* e *Sair*.
 - **Esc** ou clicar fora: fecha o painel.
 
 Configurações ficam em `HKCU\Software\EyeSight`; a inicialização automática, em `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
@@ -82,6 +82,10 @@ O menu Iniciar e a barra de tarefas ficam numa faixa de z-order acima de qualque
 3. assina o .exe e **apaga a chave privada** logo em seguida, para que o certificado não possa assinar mais nada.
 
 `Desinstalar.cmd` remove o programa, o certificado e a inicialização automática.
+
+### Cursor do mouse
+
+O Windows desenha o cursor por cima de todas as janelas, até das que ficam acima do menu Iniciar, então nenhuma camada consegue cobri-lo. Por isso o Eye Sight troca os cursores do sistema (seta, texto, mão, redimensionar etc.) por cópias com o mesmo grão e a mesma intensidade da tela (`SetSystemCursor`), e refaz as cópias quando você muda o estilo, a intensidade ou o esquema/tamanho do ponteiro nas Configurações. Ao sair, desligar a textura ou desmarcar *Textura no cursor do mouse*, os cursores originais voltam (`SPI_SETCURSORS`). Os cursores animados (ocupado) e os que invertem a cor do fundo ficam como estão, assim como cursores próprios de alguns programas e jogos.
 
 ### Luz quente
 
