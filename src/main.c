@@ -1320,6 +1320,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
 
     WM_TASKBARCREATED = RegisterWindowMessageW(L"TaskbarCreated");
     g_main = CreateWindowExW(WS_EX_TOOLWINDOW, CLS_MAIN, APP_NAME, WS_POPUP, 0, 0, 0, 0, NULL, NULL, inst, NULL);
+    // na versão instalada (uiAccess) o Windows bloqueia mensagens vindas de processos comuns,
+    // como a segunda instância pedindo para abrir o painel
+    ChangeWindowMessageFilterEx(g_main, WM_SHOWFLYOUT, MSGFLT_ALLOW, NULL);
     create_flyout();
     rebuild_overlays();
     apply_warmth();
