@@ -34,12 +34,16 @@ try {
     Remove-Item -Path "Cert:\LocalMachine\My\$($cert.Thumbprint)" -DeleteKey
     if ($sig.Status -ne 'Valid') { throw "A assinatura falhou: $($sig.StatusMessage)" }
 
+    # inicialização com o Windows (o programa instalado nem sempre consegue gravar isso sozinho)
+    Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name EyeSight -Value "`"$dst`" --tray"
+    if (-not (Test-Path 'HKCU:\Software\EyeSight')) { New-Item 'HKCU:\Software\EyeSight' | Out-Null }
+    New-ItemProperty 'HKCU:\Software\EyeSight' -Name Startup -Value 1 -PropertyType DWord -Force | Out-Null
+
     Write-Host 'Abrindo o Eye Sight...'
     # abre pelo Explorer para rodar como usuário comum (não como administrador)
     Start-Process explorer.exe -ArgumentList "`"$dst`""
     Write-Host ''
     Write-Host 'Pronto! O Eye Sight está instalado e inicia junto com o Windows.' -ForegroundColor Green
-    Write-Host 'Pode apagar o EyeSight.exe antigo da área de trabalho.'
 } catch {
     Write-Host ''
     Write-Host "Erro: $($_.Exception.Message)" -ForegroundColor Red
