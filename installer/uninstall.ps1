@@ -1,6 +1,6 @@
 ﻿# Remove o Eye Sight instalado, a assinatura local e a inicialização automática.
 $subject = 'CN=Eye Sight (assinatura local)'
-Get-Process EyeSight -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process EyeSight* -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 700
 Remove-Item (Join-Path $env:ProgramFiles 'Eye Sight') -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($store in 'Root', 'TrustedPublisher', 'My') {

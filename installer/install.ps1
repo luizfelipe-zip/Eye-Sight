@@ -10,7 +10,7 @@ $dst = Join-Path $dir 'EyeSight.exe'
 
 try {
     Write-Host 'Fechando o Eye Sight, se estiver aberto...'
-    Get-Process EyeSight -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process EyeSight* -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 700
 
     Write-Host "Copiando para $dir"

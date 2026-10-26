@@ -163,6 +163,34 @@ static void apply_startup(BOOL on)
     RegCloseKey(k);
 }
 
+// Ao abrir, só assume a inicialização automática se for a versão instalada (Arquivos de
+// Programas) ou se a entrada atual não existir ou apontar para um arquivo que sumiu. Assim
+// uma cópia solta aberta para teste não toma o lugar da versão instalada.
+static BOOL should_claim_startup(void)
+{
+    wchar_t self[MAX_PATH], pf[MAX_PATH], cur[MAX_PATH + 32], path[MAX_PATH];
+    DWORD sz = sizeof cur, type;
+    GetModuleFileNameW(NULL, self, MAX_PATH);
+    if (GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH) && CompareStringOrdinal(self, lstrlenW(pf), pf, -1, TRUE) == CSTR_EQUAL)
+        return TRUE;
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return TRUE;
+    LONG r = RegQueryValueExW(k, RUN_VALUE, NULL, &type, (BYTE *)cur, &sz);
+    RegCloseKey(k);
+    if (r != ERROR_SUCCESS || type != REG_SZ)
+        return TRUE;
+    // a entrada tem o formato "caminho" --tray
+    const wchar_t *p = cur[0] == L'"' ? cur + 1 : cur;
+    int n = 0;
+    while (p[n] && p[n] != L'"' && n < MAX_PATH - 1) {
+        path[n] = p[n];
+        n++;
+    }
+    path[n] = 0;
+    return GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES;
+}
+
 static void load_theme(void)
 {
     const wchar_t *pers = L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
@@ -1153,7 +1181,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     g_preset = (int)cfg_get(L"Preset", DEFAULT_PRESET);
     if (g_preset < 0 || g_preset >= NUM_PRESETS)
         g_preset = DEFAULT_PRESET;
-    apply_startup(startup_enabled());
+    if (startup_enabled() && should_claim_startup())
+        apply_startup(TRUE);
     if (first_run)
         save_config();
 
