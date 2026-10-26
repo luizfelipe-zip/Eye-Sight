@@ -50,11 +50,14 @@
 #define WM_TRAY (WM_APP + 1)
 #define WM_SHOWFLYOUT (WM_APP + 2)
 #define WM_QUITAPP (WM_APP + 3)
+#define WM_RELOADCURSOR (WM_APP + 4)
 #define TIMER_TOPMOST 1
 #define TIMER_DISPLAY 2
 #define TIMER_SAVE 3
 #define TIMER_ANIM 4
 #define TIMER_CURSOR 5
+#define CURSOR_DIM_DEFAULT 4
+#define CURSOR_WARM_DEFAULT 6
 #define IDM_STARTUP 101
 #define IDM_CAPTURE 102
 #define IDM_EXIT 103
@@ -106,6 +109,7 @@ static float warm_kelvin(int v);
 
 // configuração (lembrada no registro)
 static int g_value, g_last_on = 40, g_preset, g_warm;
+static int g_cur_dim, g_cur_warm; // ajuste fino do cursor (%), só pelo registro
 static BOOL g_hide_capture = TRUE, g_cursor_grain = TRUE;
 
 // tema
@@ -661,8 +665,12 @@ static void apply_cursor_grain(void)
     if (g_ncur < 0)
         load_cursor_bases();
     float t = g_value / 100.0f, warm[3];
-    kelvin_rgb(warm_kelvin(g_warm), warm); // multiplicadores R, G, B da Luz quente
-    float mul[3] = {warm[2], warm[1], warm[0]}; // ordem dos bytes: B, G, R
+    // o cursor fica isolado por um contorno preto e o olho o vê mais claro que a tela em volta;
+    // CursorDim escurece e CursorWarm esquenta só o cursor para compensar
+    int w = g_warm ? g_warm + g_cur_warm : 0;
+    kelvin_rgb(warm_kelvin(w > 100 ? 100 : w), warm); // multiplicadores R, G, B da Luz quente
+    float k = 1 - g_cur_dim / 100.0f;
+    float mul[3] = {warm[2] * k, warm[1] * k, warm[0] * k}; // ordem dos bytes: B, G, R
     for (int i = 0; i < g_ncur; i++) {
         CursorBase *b = &g_cur[i];
         uint32_t *grain = malloc((size_t)b->w * b->h * 4), *bits;
@@ -710,6 +718,16 @@ static void apply_cursor_grain(void)
         if (mask)
             DeleteObject(mask);
     }
+}
+
+static void load_cursor_tuning(void)
+{
+    g_cur_dim = (int)cfg_get(L"CursorDim", CURSOR_DIM_DEFAULT);
+    g_cur_warm = (int)cfg_get(L"CursorWarm", CURSOR_WARM_DEFAULT);
+    if (g_cur_dim > 50)
+        g_cur_dim = CURSOR_DIM_DEFAULT;
+    if (g_cur_warm > 50)
+        g_cur_warm = CURSOR_WARM_DEFAULT;
 }
 
 // junta várias mudanças seguidas (arrastar o slider) numa troca só de cursores
@@ -1369,6 +1387,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_QUITAPP:
         DestroyWindow(hwnd);
         return 0;
+    case WM_RELOADCURSOR:
+        load_cursor_tuning();
+        schedule_cursor_grain();
+        return 0;
     case WM_DESTROY:
         save_config();
         restore_cursors();
@@ -1431,6 +1453,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         HWND w = FindWindowW(CLS_MAIN, NULL);
         if (w && wcsstr(cmdline, L"--exit")) {
             PostMessageW(w, WM_QUITAPP, 0, 0);
+        } else if (w && wcsstr(cmdline, L"--reload-cursor")) {
+            PostMessageW(w, WM_RELOADCURSOR, 0, 0);
         } else if (w) {
             AllowSetForegroundWindow(ASFW_ANY);
             PostMessageW(w, WM_SHOWFLYOUT, 0, 0);
@@ -1455,6 +1479,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         g_last_on = 40;
     g_hide_capture = cfg_get(L"HideFromCapture", 1) != 0;
     g_cursor_grain = cfg_get(L"CursorGrain", 1) != 0;
+    load_cursor_tuning();
     g_preset = (int)cfg_get(L"Preset", DEFAULT_PRESET);
     if (g_preset < 0 || g_preset >= NUM_PRESETS)
         g_preset = DEFAULT_PRESET;
@@ -1486,6 +1511,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     // como a segunda instância pedindo para abrir o painel
     ChangeWindowMessageFilterEx(g_main, WM_SHOWFLYOUT, MSGFLT_ALLOW, NULL);
     ChangeWindowMessageFilterEx(g_main, WM_QUITAPP, MSGFLT_ALLOW, NULL);
+    ChangeWindowMessageFilterEx(g_main, WM_RELOADCURSOR, MSGFLT_ALLOW, NULL);
     create_flyout();
     rebuild_overlays();
     SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0); // tira o grão que tenha ficado de uma execução interrompida
