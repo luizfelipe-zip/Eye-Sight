@@ -1,0 +1,21 @@
+name: Remover release
+
+# Apaga uma release e a tag correspondente (ex.: uma versão publicada por engano).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão a remover (ex.: v1.0.2)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  remove:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remover release e tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "${{ inputs.version }}" --cleanup-tag --yes --repo "${{ github.repository }}"
