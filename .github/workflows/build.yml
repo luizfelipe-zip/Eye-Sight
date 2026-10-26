@@ -1,0 +1,58 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão para publicar como release (ex.: v1.0.0). Vazio = só compilar."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Compilar
+        run: sh build.sh
+
+      - name: Empacotar
+        run: |
+          cd build
+          zip -r EyeSight-Instalador.zip EyeSight-Instalador
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EyeSight
+          path: |
+            build/EyeSight.exe
+            build/EyeSight-Instalador.zip
+
+      - name: Substituir release existente da mesma versão
+        if: inputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "${{ inputs.version }}" --cleanup-tag --yes || true
+
+      - name: Publicar release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: Eye Sight ${{ inputs.version || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            build/EyeSight.exe
+            build/EyeSight-Instalador.zip
+          generate_release_notes: true
