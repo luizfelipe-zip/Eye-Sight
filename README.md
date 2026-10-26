@@ -60,7 +60,7 @@ Requer Windows 10 ou 11 (64 bits). No Windows 11 o painel tem cantos arredondado
 - **Amostras** abaixo do slider (ou teclas **1** a **5**): troca o estilo.
 - **Luz quente** (slider laranja): de 0 (cor normal) a 100 (âmbar); 50 fica perto de 3000 K. Também com a roda do mouse sobre ele ou **Shift + setas**.
 - **Botão de energia** (ou **Espaço**): liga/desliga a textura lembrando a intensidade.
-- **Engrenagem** ou **clique direito** no ícone: menu com *Estilo da textura*, *Iniciar com o Windows*, *Textura no cursor do mouse*, *Esconder a textura em prints* e *Sair*.
+- **Engrenagem** ou **clique direito** no ícone: menu com *Estilo da textura*, *Iniciar com o Windows*, *Textura e Luz quente no cursor*, *Esconder a textura em prints* e *Sair*.
 - **Esc** ou clicar fora: fecha o painel.
 
 Configurações ficam em `HKCU\Software\EyeSight`; a inicialização automática, em `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
@@ -85,7 +85,7 @@ O menu Iniciar e a barra de tarefas ficam numa faixa de z-order acima de qualque
 
 ### Cursor do mouse
 
-O Windows desenha o cursor por cima de todas as janelas, até das que ficam acima do menu Iniciar, então nenhuma camada consegue cobri-lo. Por isso o Eye Sight troca os cursores do sistema (seta, texto, mão, redimensionar etc.) por cópias com o mesmo grão e a mesma intensidade da tela (`SetSystemCursor`), e refaz as cópias quando você muda o estilo, a intensidade ou o esquema/tamanho do ponteiro nas Configurações. Ao sair, desligar a textura ou desmarcar *Textura no cursor do mouse*, os cursores originais voltam (`SPI_SETCURSORS`). Os cursores animados (ocupado) e os que invertem a cor do fundo ficam como estão, assim como cursores próprios de alguns programas e jogos.
+O Windows desenha o cursor por cima de todas as janelas, até das que ficam acima do menu Iniciar, e fora do filtro de cor da Luz quente, então nem a camada nem o filtro chegam nele. Por isso o Eye Sight troca os cursores do sistema (seta, mão, redimensionar etc.) por cópias com o mesmo grão, a mesma intensidade e o mesmo tom quente da tela (`SetSystemCursor`), e refaz as cópias quando você muda o estilo, a intensidade, a Luz quente ou o esquema/tamanho do ponteiro nas Configurações. Ao sair, zerar a textura e a Luz quente ou desmarcar *Textura e Luz quente no cursor*, os cursores originais voltam (`SPI_SETCURSORS`). Os cursores animados (ocupado) e os que invertem a cor do fundo ficam como estão, assim como cursores próprios de alguns programas e jogos.
 
 ### Luz quente
 

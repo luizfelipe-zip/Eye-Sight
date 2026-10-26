@@ -5,7 +5,7 @@ Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](h
 ## [1.2.0] - 2026-10-26
 
 ### Adicionado
-- Textura no cursor do mouse: os cursores do sistema (seta, texto, mão, redimensionar e outros) ganham o mesmo grão e a mesma intensidade da tela, já que o Windows sempre desenha o cursor por cima de qualquer janela. Dá para desligar no menu, em *Textura no cursor do mouse*. Os cursores originais voltam ao sair do programa.
+- Textura e Luz quente no cursor do mouse: os cursores do sistema (seta, mão, redimensionar e outros) ganham o mesmo grão, a mesma intensidade e o mesmo tom quente da tela, já que o Windows desenha o cursor por cima de qualquer janela e fora do filtro de cor. Dá para desligar no menu, em *Textura e Luz quente no cursor*. Os cursores originais voltam ao sair do programa. O cursor de texto padrão do Windows, que inverte as cores do fundo, fica como está.
 
 ### Alterado
 - Instalar e desinstalar agora pedem para o Eye Sight fechar sozinho antes de removê-lo, para ele devolver os cursores e as cores normais. O desinstalador também restaura os cursores, caso o programa tenha sido encerrado à força.
