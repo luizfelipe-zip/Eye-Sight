@@ -2,14 +2,18 @@
 
 <h1 align="center">Eye Sight</h1>
 
-<p align="center">Textura de papel (grain) sobre a tela do Windows, para ler com mais conforto.<br>
+<p align="center">Textura de papel (grain) e luz quente sobre a tela do Windows, para ler com mais conforto.<br>
 Fica só na bandeja, como o Twinkle Tray: sem janela na barra de tarefas, sem aparecer no Alt+Tab.</p>
+
+<p align="center"><img src="docs/painel.png" width="360" alt="Painel do Eye Sight com o slider da textura, os cinco estilos e o slider da Luz quente"></p>
 
 ---
 
-Inspirado no "Modo de leitura → Textura" dos celulares Poco/Xiaomi: uma camada de grão bem fino sobre a tela que quebra o brilho "plástico" do monitor e deixa a leitura parecida com papel. O Eye Sight só mexe na textura (não altera cor nem temperatura).
+Inspirado no "Modo de leitura" dos celulares Poco/Xiaomi: uma camada de grão bem fino sobre a tela que quebra o brilho "plástico" do monitor e deixa a leitura parecida com papel, e uma luz quente opcional para a noite.
 
-- **Só na bandeja.** Um clique no ícone abre um painel com o slider de intensidade e os estilos.
+- **Só na bandeja.** Um clique no ícone abre um painel com a intensidade da textura, os estilos e a Luz quente.
+- **Cobre tudo**, inclusive o menu Iniciar, a busca e a barra de tarefas.
+- **Luz quente** de 6500 K (cor normal) a 2000 K (âmbar), que substitui a Luz noturna do Windows sem fazer o grão piscar.
 - **Invisível para o resto do sistema.** Não aparece na barra de tarefas, no Alt+Tab nem no Win+Tab, e cliques passam direto pela textura.
 - **Cinco estilos finos**, do mais fino ao mais marcado.
 - **Inicia com o Windows** direto na bandeja e lembra a última configuração.
@@ -30,23 +34,32 @@ Inspirado no "Modo de leitura → Textura" dos celulares Poco/Xiaomi: uma camada
 
 Todos usam grão de 1 pixel físico. Os quatro mais finos usam ruído filtrado ("ruído azul", sem aglomerados), que o olho percebe como mais miúdo.
 
+## Recomendado
+
+> [!IMPORTANT]
+> **Não use junto com a Luz noturna do Windows.** Deixe a Luz noturna desligada (Configurações → Sistema → Tela) e use a **Luz quente** do Eye Sight no lugar. A Luz noturna altera a tabela de cores da placa de vídeo, que passa a pontilhar os tons: num grão de 1 pixel isso aparece como piscadas e como mudanças de intensidade alguns segundos depois de trocar de janela.
+
+> [!TIP]
+> **Se a textura mudar de força entre páginas claras e escuras, desligue o DCR do monitor** (contraste dinâmico, às vezes chamado de *Dynamic Contrast*, *ACM* ou *Smart Contrast*, no menu do próprio monitor). Ele ajusta o brilho conforme o conteúdo e pode fazer o grão parecer mais forte ou mais fraco. Isso depende de cada monitor: em muitos não faz diferença.
+
 ## Instalação
 
 Baixe na página de [Releases](../../releases):
 
-- **`EyeSight.exe`**: versão portátil. Coloque numa pasta fixa e abra com dois cliques. A textura cobre tudo, menos o menu Iniciar, a busca e a barra de tarefas.
-- **`EyeSight-Instalador.zip`**: versão completa, em que a textura cobre também o menu Iniciar e a barra. Extraia e rode `Instalar.cmd` (pede administrador). Para remover, use `Desinstalar.cmd`.
+- **`EyeSight-Instalador.zip`**: extraia e dê dois cliques em `Instalar.cmd` (pede administrador). O Eye Sight vai para `C:\Program Files\Eye Sight`, abre na bandeja e passa a iniciar com o Windows. A textura cobre tudo, inclusive o menu Iniciar, a busca e a barra de tarefas.
+- **`EyeSight-Desinstalador.zip`**: para remover. Extraia e dê dois cliques em `Desinstalar.cmd` (pede administrador). Remove o programa, a assinatura local e a inicialização automática. O mesmo `Desinstalar.cmd` também vem dentro do instalador.
 
-Na primeira execução o SmartScreen pode avisar que o app não é reconhecido, porque o .exe não é assinado por uma autoridade comercial. Clique em **Mais informações → Executar assim mesmo**.
+Na primeira execução o SmartScreen pode avisar que o arquivo não é reconhecido, porque ele não é assinado por uma autoridade comercial. Clique em **Mais informações → Executar assim mesmo**.
 
 Requer Windows 10 ou 11 (64 bits). No Windows 11 o painel tem cantos arredondados e fundo acrílico.
 
 ## Uso
 
 - **Clique** no ícone da bandeja: abre o painel. Se o ícone estiver escondido, arraste-o da setinha `^` para a barra.
-- **Slider**: intensidade. Também funciona com a roda do mouse, as setas, Page Up/Down e Home/End.
+- **Slider de cima**: intensidade da textura. Também funciona com a roda do mouse, as setas, Page Up/Down e Home/End.
 - **Amostras** abaixo do slider (ou teclas **1** a **5**): troca o estilo.
-- **Botão de energia** (ou **Espaço**): liga/desliga lembrando a intensidade.
+- **Luz quente** (slider laranja): de 0 (cor normal) a 100 (âmbar); 50 fica perto de 3000 K. Também com a roda do mouse sobre ele ou **Shift + setas**.
+- **Botão de energia** (ou **Espaço**): liga/desliga a textura lembrando a intensidade.
 - **Engrenagem** ou **clique direito** no ícone: menu com *Estilo da textura*, *Iniciar com o Windows*, *Esconder a textura em prints* e *Sair*.
 - **Esc** ou clicar fora: fecha o painel.
 
@@ -70,6 +83,10 @@ O menu Iniciar e a barra de tarefas ficam numa faixa de z-order acima de qualque
 
 `Desinstalar.cmd` remove o programa, o certificado e a inicialização automática.
 
+### Luz quente
+
+A Luz quente usa o filtro de cor de tela cheia da Magnification API (`MagSetFullscreenColorEffect`, o mesmo recurso dos "Filtros de cor" de acessibilidade do Windows). É uma matriz que multiplica o vermelho, o verde e o azul na composição do DWM, com as cores de um corpo negro entre 6500 K e 2000 K (passos iguais em mireds). Ela não mexe na tabela de gama da placa de vídeo, como a Luz noturna faz, então o grão continua estável. Ao sair do Eye Sight as cores voltam ao normal. Por usar o mesmo recurso, não funciona junto com a Lupa ou os Filtros de cor do Windows.
+
 ## Compilar
 
 Não há dependências além do compilador.
@@ -87,15 +104,15 @@ sh build.sh
 build.bat
 ```
 
-A saída fica em `build/`. O GitHub Actions compila a cada push. Para publicar uma release, crie uma tag `v*` ou rode o workflow **Build** manualmente (aba Actions → Run workflow) informando a versão.
+A saída fica em `build/`: `EyeSight-Instalador/` e `EyeSight-Desinstalador/`. O GitHub Actions compila a cada push. Para publicar uma release, crie uma tag `v*` ou rode o workflow **Build** manualmente (aba Actions → Run workflow) informando a versão.
 
 ### Estrutura
 
 ```
 src/
-  main.c            bandeja, painel, camadas da textura
+  main.c            bandeja, painel, camadas da textura, luz quente
   grain.h           geração das texturas e lista de estilos
-  app*.rc, *.manifest, app.ico
+  app-uiaccess.rc, app-uiaccess.manifest, app.ico
 installer/          Instalar.cmd / install.ps1, Desinstalar.cmd / uninstall.ps1
 tools/
   preview.c         gera prévia dos estilos (PPM) sem precisar do Windows
