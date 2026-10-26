@@ -49,13 +49,16 @@
 
 #define WM_TRAY (WM_APP + 1)
 #define WM_SHOWFLYOUT (WM_APP + 2)
+#define WM_QUITAPP (WM_APP + 3)
 #define TIMER_TOPMOST 1
 #define TIMER_DISPLAY 2
 #define TIMER_SAVE 3
 #define TIMER_ANIM 4
+#define TIMER_CURSOR 5
 #define IDM_STARTUP 101
 #define IDM_CAPTURE 102
 #define IDM_EXIT 103
+#define IDM_CURSOR 104
 #define IDM_PRESET0 110
 #define ZBID_UIACCESS 2
 #define MAX_MON 16
@@ -97,10 +100,11 @@ static DWORD g_build;
 static ATOM g_overlay_atom;
 
 static void update_tray(BOOL force_icon);
+static void schedule_cursor_grain(void);
 
 // configuração (lembrada no registro)
 static int g_value, g_last_on = 40, g_preset, g_warm;
-static BOOL g_hide_capture = TRUE;
+static BOOL g_hide_capture = TRUE, g_cursor_grain = TRUE;
 
 // tema
 static BOOL g_dark = TRUE, g_taskbar_dark = TRUE, g_transparency = TRUE, g_acrylic;
@@ -436,6 +440,7 @@ static void set_preset(int p)
     if (g_value == 0)
         g_value = g_last_on > 0 ? g_last_on : 40;
     apply_overlays();
+    schedule_cursor_grain();
     update_tray(FALSE);
     if (g_fly)
         InvalidateRect(g_fly, NULL, FALSE);
@@ -580,6 +585,131 @@ static void add_tray(void)
     update_tray(FALSE);
 }
 
+// ---------------------------------------------------------------- textura no cursor
+
+// O Windows desenha o cursor acima de qualquer janela, até da faixa uiAccess, então a camada
+// nunca passa por cima dele. Em vez disso, os cursores do sistema são trocados por cópias com o
+// mesmo grão aplicado (SetSystemCursor). SPI_SETCURSORS devolve os originais do esquema do usuário.
+// Os cursores animados (ocupado, trabalhando em segundo plano) e os monocromáticos que invertem a
+// cor do fundo ficam como estão.
+typedef struct { DWORD id; int w, h; DWORD hx, hy; uint32_t *px; } CursorBase; // px: BGRA, alpha não premultiplicado
+static const DWORD CURSOR_IDS[] = {32512, 32513, 32515, 32516, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32651, 32671, 32672};
+#define MAX_CURSORS (sizeof CURSOR_IDS / sizeof CURSOR_IDS[0])
+static CursorBase g_cur[MAX_CURSORS];
+static int g_ncur = -1; // -1: originais ainda não lidos
+static BOOL g_cur_applied;
+
+static void restore_cursors(void)
+{
+    if (g_cur_applied)
+        SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0);
+    g_cur_applied = FALSE;
+}
+
+static void free_cursor_bases(void)
+{
+    for (int i = 0; i < g_ncur; i++)
+        free(g_cur[i].px);
+    g_ncur = -1;
+}
+
+static void load_cursor_bases(void)
+{
+    // recarrega o esquema do usuário para nunca copiar um cursor que já tem grão
+    SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0);
+    g_ncur = 0;
+    HDC dc = GetDC(NULL);
+    for (size_t i = 0; i < MAX_CURSORS; i++) {
+        HCURSOR c = LoadCursorW(NULL, MAKEINTRESOURCEW(CURSOR_IDS[i]));
+        ICONINFO ii;
+        if (!c || !GetIconInfo(c, &ii))
+            continue;
+        BITMAP bm;
+        if (ii.hbmColor && GetObjectW(ii.hbmColor, sizeof bm, &bm)) {
+            int w = bm.bmWidth, h = bm.bmHeight;
+            BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB}};
+            uint32_t *px = malloc((size_t)w * h * 4), *mask = malloc((size_t)w * h * 4);
+            if (px && mask && GetDIBits(dc, ii.hbmColor, 0, h, px, &bi, DIB_RGB_COLORS) == h &&
+                GetDIBits(dc, ii.hbmMask, 0, h, mask, &bi, DIB_RGB_COLORS) == h) {
+                BOOL has_alpha = FALSE;
+                for (int k = 0; k < w * h && !has_alpha; k++)
+                    has_alpha = (px[k] >> 24) != 0;
+                if (!has_alpha) // cursor antigo sem alpha: a máscara diz o que é transparente
+                    for (int k = 0; k < w * h; k++)
+                        px[k] = (mask[k] & 0xFFFFFF) ? 0 : px[k] | 0xFF000000u;
+                g_cur[g_ncur++] = (CursorBase){CURSOR_IDS[i], w, h, ii.xHotspot, ii.yHotspot, px};
+                px = NULL;
+            }
+            free(px);
+            free(mask);
+        }
+        if (ii.hbmColor)
+            DeleteObject(ii.hbmColor);
+        DeleteObject(ii.hbmMask);
+    }
+    ReleaseDC(NULL, dc);
+}
+
+static void apply_cursor_grain(void)
+{
+    if (!g_cursor_grain || g_value == 0) {
+        restore_cursors();
+        return;
+    }
+    if (g_ncur < 0)
+        load_cursor_bases();
+    float t = g_value / 100.0f;
+    for (int i = 0; i < g_ncur; i++) {
+        CursorBase *b = &g_cur[i];
+        uint32_t *grain = malloc((size_t)b->w * b->h * 4), *bits;
+        BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), b->w, -b->h, 1, 32, BI_RGB}};
+        HBITMAP color = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+        // máscara AND: 1 onde o cursor é transparente (usada por quem ignora o alpha)
+        int stride = (b->w + 15) / 16 * 2;
+        BYTE *maskbits = calloc((size_t)stride * b->h, 1);
+        if (maskbits)
+            for (int y = 0; y < b->h; y++)
+                for (int x = 0; x < b->w; x++)
+                    if (!(b->px[y * b->w + x] >> 24))
+                        maskbits[y * stride + x / 8] |= (BYTE)(0x80 >> (x % 8));
+        HBITMAP mask = maskbits ? CreateBitmap(b->w, b->h, 1, 1, maskbits) : NULL;
+        if (grain && color && mask) {
+            // mesma mistura da camada da tela: escurece pelo alpha do grão e soma o grão claro
+            render_grain(grain, b->w, b->h, 1.0f, 0x51ed270bu + b->id, &PRESETS[g_preset]);
+            for (int k = 0; k < b->w * b->h; k++) {
+                uint32_t p = b->px[k], A = p >> 24;
+                if (!A) {
+                    bits[k] = 0;
+                    continue;
+                }
+                float ga = (grain[k] >> 24) / 255.0f * t, gv = (grain[k] & 255) * t;
+                uint32_t o = A << 24;
+                for (int sh = 0; sh <= 16; sh += 8) {
+                    float c = ((p >> sh) & 255) * (1 - ga) + gv;
+                    o |= (uint32_t)(c > 255 ? 255 : c + 0.5f) << sh;
+                }
+                bits[k] = o;
+            }
+            GdiFlush();
+            ICONINFO ii = {FALSE, b->hx, b->hy, mask, color};
+            HCURSOR c = CreateIconIndirect(&ii);
+            if (c && SetSystemCursor(c, b->id)) // o sistema passa a ser dono do cursor
+                g_cur_applied = TRUE;
+            else if (c)
+                DestroyCursor(c);
+        }
+        free(grain);
+        free(maskbits);
+        if (color)
+            DeleteObject(color);
+        if (mask)
+            DeleteObject(mask);
+    }
+}
+
+// junta várias mudanças seguidas (arrastar o slider) numa troca só de cursores
+static void schedule_cursor_grain(void) { SetTimer(g_main, TIMER_CURSOR, 120, NULL); }
+
 // ---------------------------------------------------------------- luz quente
 
 // O tom quente usa o filtro de cor de tela cheia da Magnification API (o mesmo dos "Filtros de
@@ -669,6 +799,7 @@ static void set_value(int v)
     if (v > 0)
         g_last_on = v;
     apply_overlays();
+    schedule_cursor_grain();
     update_tray(FALSE);
     if (g_fly)
         InvalidateRect(g_fly, NULL, FALSE);
@@ -690,6 +821,7 @@ static void save_config(void)
     cfg_set(L"HideFromCapture", (DWORD)g_hide_capture);
     cfg_set(L"Preset", (DWORD)g_preset);
     cfg_set(L"Warmth", (DWORD)g_warm);
+    cfg_set(L"CursorGrain", (DWORD)g_cursor_grain);
 }
 
 // ---------------------------------------------------------------- menu
@@ -702,6 +834,7 @@ static void show_menu(HWND owner, int x, int y)
     AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, L"Estilo da textura");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (startup_enabled() ? MF_CHECKED : 0), IDM_STARTUP, L"Iniciar com o Windows");
+    AppendMenuW(m, MF_STRING | (g_cursor_grain ? MF_CHECKED : 0), IDM_CURSOR, L"Textura no cursor do mouse");
     AppendMenuW(m, MF_STRING | (g_hide_capture ? MF_CHECKED : 0), IDM_CAPTURE, L"Esconder a textura em prints");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"Sair");
@@ -722,6 +855,11 @@ static void show_menu(HWND owner, int x, int y)
         g_hide_capture = !g_hide_capture;
         for (int i = 0; i < g_novl; i++)
             SetWindowDisplayAffinity(g_ov[i].hwnd, g_hide_capture ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+        save_config();
+        break;
+    case IDM_CURSOR:
+        g_cursor_grain = !g_cursor_grain;
+        apply_cursor_grain();
         save_config();
         break;
     case IDM_EXIT:
@@ -1183,6 +1321,13 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetTimer(hwnd, TIMER_DISPLAY, 800, NULL);
         return 0;
     case WM_SETTINGCHANGE:
+        if (wp == SPI_SETCURSORS) {
+            // o usuário trocou o esquema ou o tamanho do ponteiro: copia os novos cursores
+            g_cur_applied = FALSE;
+            free_cursor_bases();
+            schedule_cursor_grain();
+            return 0;
+        }
         if (lp && lstrcmpW((const wchar_t *)lp, L"ImmersiveColorSet") == 0) {
             load_theme();
             update_tray(TRUE);
@@ -1195,6 +1340,9 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hwnd, TIMER_DISPLAY);
             if (layout_changed())
                 rebuild_overlays();
+        } else if (wp == TIMER_CURSOR) {
+            KillTimer(hwnd, TIMER_CURSOR);
+            apply_cursor_grain();
         } else if (wp == TIMER_SAVE) {
             KillTimer(hwnd, TIMER_SAVE);
             save_config();
@@ -1212,8 +1360,12 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_QUERYENDSESSION:
         save_config();
         return TRUE;
+    case WM_QUITAPP:
+        DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY:
         save_config();
+        restore_cursors();
         if (g_warm > 0) {
             g_warm = 0;
             apply_warmth(); // devolve as cores normais
@@ -1268,9 +1420,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
 
     HANDLE mutex = CreateMutexW(NULL, TRUE, L"Local\\EyeSight.SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // já está rodando: abre o painel da instância existente
+        // já está rodando: abre o painel da instância existente, ou a fecha com --exit
+        // (usado pelo instalador para o Eye Sight devolver cursores e cores antes de sair)
         HWND w = FindWindowW(CLS_MAIN, NULL);
-        if (w) {
+        if (w && wcsstr(cmdline, L"--exit")) {
+            PostMessageW(w, WM_QUITAPP, 0, 0);
+        } else if (w) {
             AllowSetForegroundWindow(ASFW_ANY);
             PostMessageW(w, WM_SHOWFLYOUT, 0, 0);
         }
@@ -1293,6 +1448,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     if (g_last_on < 1 || g_last_on > 100)
         g_last_on = 40;
     g_hide_capture = cfg_get(L"HideFromCapture", 1) != 0;
+    g_cursor_grain = cfg_get(L"CursorGrain", 1) != 0;
     g_preset = (int)cfg_get(L"Preset", DEFAULT_PRESET);
     if (g_preset < 0 || g_preset >= NUM_PRESETS)
         g_preset = DEFAULT_PRESET;
@@ -1323,8 +1479,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     // na versão instalada (uiAccess) o Windows bloqueia mensagens vindas de processos comuns,
     // como a segunda instância pedindo para abrir o painel
     ChangeWindowMessageFilterEx(g_main, WM_SHOWFLYOUT, MSGFLT_ALLOW, NULL);
+    ChangeWindowMessageFilterEx(g_main, WM_QUITAPP, MSGFLT_ALLOW, NULL);
     create_flyout();
     rebuild_overlays();
+    SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0); // tira o grão que tenha ficado de uma execução interrompida
+    apply_cursor_grain();
     apply_warmth();
     add_tray();
     SetTimer(g_main, TIMER_TOPMOST, 2000, NULL);
