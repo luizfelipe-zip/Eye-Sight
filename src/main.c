@@ -101,6 +101,8 @@ static ATOM g_overlay_atom;
 
 static void update_tray(BOOL force_icon);
 static void schedule_cursor_grain(void);
+static void kelvin_rgb(float k, float rgb[3]);
+static float warm_kelvin(int v);
 
 // configuração (lembrada no registro)
 static int g_value, g_last_on = 40, g_preset, g_warm;
@@ -587,9 +589,9 @@ static void add_tray(void)
 
 // ---------------------------------------------------------------- textura no cursor
 
-// O Windows desenha o cursor acima de qualquer janela, até da faixa uiAccess, então a camada
-// nunca passa por cima dele. Em vez disso, os cursores do sistema são trocados por cópias com o
-// mesmo grão aplicado (SetSystemCursor). SPI_SETCURSORS devolve os originais do esquema do usuário.
+// O Windows desenha o cursor acima de qualquer janela, até da faixa uiAccess, e fora do filtro de
+// cor da Luz quente, então nem a camada nem o filtro chegam nele. Em vez disso, os cursores do
+// sistema são trocados por cópias com o mesmo grão e o mesmo tom quente aplicados (SetSystemCursor). SPI_SETCURSORS devolve os originais do esquema do usuário.
 // Os cursores animados (ocupado, trabalhando em segundo plano) e os monocromáticos que invertem a
 // cor do fundo ficam como estão.
 typedef struct { DWORD id; int w, h; DWORD hx, hy; uint32_t *px; } CursorBase; // px: BGRA, alpha não premultiplicado
@@ -652,13 +654,15 @@ static void load_cursor_bases(void)
 
 static void apply_cursor_grain(void)
 {
-    if (!g_cursor_grain || g_value == 0) {
+    if (!g_cursor_grain || (g_value == 0 && g_warm == 0)) {
         restore_cursors();
         return;
     }
     if (g_ncur < 0)
         load_cursor_bases();
-    float t = g_value / 100.0f;
+    float t = g_value / 100.0f, warm[3];
+    kelvin_rgb(warm_kelvin(g_warm), warm); // multiplicadores R, G, B da Luz quente
+    float mul[3] = {warm[2], warm[1], warm[0]}; // ordem dos bytes: B, G, R
     for (int i = 0; i < g_ncur; i++) {
         CursorBase *b = &g_cur[i];
         uint32_t *grain = malloc((size_t)b->w * b->h * 4), *bits;
@@ -674,7 +678,8 @@ static void apply_cursor_grain(void)
                         maskbits[y * stride + x / 8] |= (BYTE)(0x80 >> (x % 8));
         HBITMAP mask = maskbits ? CreateBitmap(b->w, b->h, 1, 1, maskbits) : NULL;
         if (grain && color && mask) {
-            // mesma mistura da camada da tela: escurece pelo alpha do grão e soma o grão claro
+            // mesma mistura da tela: grão por cima do cursor (escurece pelo alpha e soma o grão
+            // claro) e depois o filtro da Luz quente sobre tudo
             render_grain(grain, b->w, b->h, 1.0f, 0x51ed270bu + b->id, &PRESETS[g_preset]);
             for (int k = 0; k < b->w * b->h; k++) {
                 uint32_t p = b->px[k], A = p >> 24;
@@ -684,8 +689,8 @@ static void apply_cursor_grain(void)
                 }
                 float ga = (grain[k] >> 24) / 255.0f * t, gv = (grain[k] & 255) * t;
                 uint32_t o = A << 24;
-                for (int sh = 0; sh <= 16; sh += 8) {
-                    float c = ((p >> sh) & 255) * (1 - ga) + gv;
+                for (int sh = 0, ch = 0; sh <= 16; sh += 8, ch++) {
+                    float c = (((p >> sh) & 255) * (1 - ga) + gv) * mul[ch];
                     o |= (uint32_t)(c > 255 ? 255 : c + 0.5f) << sh;
                 }
                 bits[k] = o;
@@ -782,6 +787,7 @@ static void set_warm(int v)
         return;
     g_warm = v;
     apply_warmth();
+    schedule_cursor_grain();
     update_tray(FALSE);
     if (g_fly)
         InvalidateRect(g_fly, NULL, FALSE);
@@ -834,7 +840,7 @@ static void show_menu(HWND owner, int x, int y)
     AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, L"Estilo da textura");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (startup_enabled() ? MF_CHECKED : 0), IDM_STARTUP, L"Iniciar com o Windows");
-    AppendMenuW(m, MF_STRING | (g_cursor_grain ? MF_CHECKED : 0), IDM_CURSOR, L"Textura no cursor do mouse");
+    AppendMenuW(m, MF_STRING | (g_cursor_grain ? MF_CHECKED : 0), IDM_CURSOR, L"Textura e Luz quente no cursor");
     AppendMenuW(m, MF_STRING | (g_hide_capture ? MF_CHECKED : 0), IDM_CAPTURE, L"Esconder a textura em prints");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"Sair");
