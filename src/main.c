@@ -80,7 +80,7 @@
 enum { HIT_NONE, HIT_SLIDER, HIT_POWER, HIT_GEAR, HIT_TILE0 = 16 };
 
 typedef struct { uint32_t *px; int w, h; } Buf;
-typedef struct { HWND hwnd; int x, y, w, h; UINT dpi; uint32_t *bits; HDC dc; HBITMAP bmp, old; } Overlay;
+typedef struct { HWND hwnd; int x, y, w, h; UINT dpi; BOOL in_band; uint32_t *bits; HDC dc; HBITMAP bmp, old; } Overlay;
 
 static HINSTANCE g_inst;
 static HWND g_main, g_fly;
@@ -353,6 +353,7 @@ static BOOL CALLBACK add_overlay(HMONITOR hm, HDC hdc, LPRECT rc, LPARAM lp)
     if (g_create_in_band)
         o->hwnd = g_create_in_band(ex, MAKEINTATOM(g_overlay_atom), L"", WS_POPUP, o->x, o->y, o->w, o->h, NULL, NULL, g_inst, NULL,
                                    ZBID_UIACCESS);
+    o->in_band = o->hwnd != NULL;
     if (!o->hwnd)
         o->hwnd = CreateWindowExW(ex, CLS_OVERLAY, L"", WS_POPUP, o->x, o->y, o->w, o->h, NULL, NULL, g_inst, NULL);
     SetPropW(o->hwnd, L"NonRudeHWND", (HANDLE)(INT_PTR)TRUE);
@@ -408,6 +409,64 @@ static void set_preset(int p)
     if (g_fly)
         InvalidateRect(g_fly, NULL, FALSE);
     SetTimer(g_main, TIMER_SAVE, 500, NULL);
+}
+
+static BOOL is_own_window(HWND w)
+{
+    if (w == g_fly || w == g_main)
+        return TRUE;
+    for (int i = 0; i < g_novl; i++)
+        if (g_ov[i].hwnd == w)
+            return TRUE;
+    return FALSE;
+}
+
+// Há alguma janela visível, de outro programa, acima da camada e sobre o monitor dela?
+static BOOL overlay_covered(const Overlay *o)
+{
+    RECT mon = {o->x, o->y, o->x + o->w, o->y + o->h}, r, x;
+    for (HWND w = GetWindow(o->hwnd, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+        if (!IsWindowVisible(w) || is_own_window(w))
+            continue;
+        BOOL cloaked = FALSE;
+        if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked)
+            continue;
+        if (GetWindowRect(w, &r) && IntersectRect(&x, &r, &mon))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+typedef struct { int n; RECT rc[MAX_MON]; UINT dpi[MAX_MON]; } MonLayout;
+
+static BOOL CALLBACK collect_monitor(HMONITOR hm, HDC hdc, LPRECT rc, LPARAM lp)
+{
+    (void)hdc; (void)rc;
+    MonLayout *l = (MonLayout *)lp;
+    if (l->n >= MAX_MON)
+        return FALSE;
+    MONITORINFO mi = {sizeof mi};
+    GetMonitorInfoW(hm, &mi);
+    l->rc[l->n] = mi.rcMonitor;
+    l->dpi[l->n++] = monitor_dpi(hm);
+    return TRUE;
+}
+
+// WM_DISPLAYCHANGE também chega por mudanças que não alteram os monitores (taxa de
+// atualização, HDR, alguns drivers). Recriar as camadas nesses casos causaria piscadas.
+static BOOL layout_changed(void)
+{
+    MonLayout l = {0};
+    EnumDisplayMonitors(NULL, NULL, collect_monitor, (LPARAM)&l);
+    if (l.n != g_novl)
+        return TRUE;
+    for (int i = 0; i < l.n; i++) {
+        const Overlay *o = &g_ov[i];
+        if (l.rc[i].left != o->x || l.rc[i].top != o->y || l.rc[i].right - l.rc[i].left != o->w ||
+            l.rc[i].bottom - l.rc[i].top - 1 != o->h || l.dpi[i] != o->dpi)
+            return TRUE;
+    }
+    return FALSE;
 }
 
 static void rebuild_overlays(void)
@@ -995,16 +1054,20 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == TIMER_DISPLAY) {
             KillTimer(hwnd, TIMER_DISPLAY);
-            rebuild_overlays();
+            if (layout_changed())
+                rebuild_overlays();
         } else if (wp == TIMER_SAVE) {
             KillTimer(hwnd, TIMER_SAVE);
             save_config();
         } else if (wp == TIMER_TOPMOST) {
-            // outras janelas "sempre no topo" podem passar por cima; reafirma a camada
+            // Outras janelas "sempre no topo" podem passar por cima. Só reordena quando
+            // isso realmente aconteceu: mexer no z-order à toa faz o DWM recompor a tela
+            // e pode causar piscadas.
             if (g_value > 0 && !IsWindowVisible(g_fly))
                 for (int i = 0; i < g_novl; i++)
-                    SetWindowPos(g_ov[i].hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    if (!g_ov[i].in_band && overlay_covered(&g_ov[i]))
+                        SetWindowPos(g_ov[i].hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
         return 0;
     case WM_QUERYENDSESSION:
