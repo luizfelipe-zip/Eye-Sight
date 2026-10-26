@@ -1,0 +1,5 @@
+build/
+*.res
+*.exe
+*.ppm
+preview
