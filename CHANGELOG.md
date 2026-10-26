@@ -2,6 +2,11 @@
 
 Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento segue o [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.0.2] - 2026-10-26
+
+### Alterado
+- Equilíbrio entre pontos claros e escuros: a textura agora aparece com a mesma força em páginas brancas e escuras (antes ficava ~10% mais forte no escuro).
+
 ## [1.0.1] - 2026-10-26
 
 ### Corrigido
@@ -20,5 +25,6 @@ Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](h
 - Instalador opcional (uiAccess com assinatura local) para a textura cobrir o menu Iniciar e a barra.
 - Build automático e publicação de releases pelo GitHub Actions.
 
+[1.0.2]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.0.2
 [1.0.1]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.0.1
 [1.0.0]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.0.0

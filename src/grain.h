@@ -10,15 +10,17 @@ typedef struct {
     const wchar_t *name, *desc;
     float hp;               // 0 = ruído comum (Seda); 1 = sem aglomerados, aparência mais fina
     float gain, light, cap; // força, proporção de pontos claros, alpha máximo
+                            // light = 0.8 deixa o grão com a mesma força percebida (ΔL*)
+                            // em páginas brancas e pretas
 } GrainPreset;
 
 // Do mais fino ao mais grosso
 static const GrainPreset PRESETS[] = {
-    {L"Pó", L"O mais fino de todos, quase imperceptível", 1.00f, 0.070f, 0.95f, 0.22f},
-    {L"Névoa", L"Finíssimo e suave", 1.00f, 0.090f, 0.92f, 0.27f},
-    {L"Véu", L"Muito fino, sem aglomerados", 0.70f, 0.100f, 0.90f, 0.30f},
-    {L"Cetim", L"Fino e uniforme", 0.40f, 0.110f, 0.90f, 0.33f},
-    {L"Seda", L"O mais marcado, ótimo para ler por horas", 0.00f, 0.120f, 0.90f, 0.35f},
+    {L"Pó", L"O mais fino de todos, quase imperceptível", 1.00f, 0.070f, 0.80f, 0.22f},
+    {L"Névoa", L"Finíssimo e suave", 1.00f, 0.090f, 0.80f, 0.27f},
+    {L"Véu", L"Muito fino, sem aglomerados", 0.70f, 0.100f, 0.80f, 0.30f},
+    {L"Cetim", L"Fino e uniforme", 0.40f, 0.110f, 0.80f, 0.33f},
+    {L"Seda", L"O mais marcado, ótimo para ler por horas", 0.00f, 0.120f, 0.80f, 0.35f},
 };
 #define NUM_PRESETS ((int)(sizeof PRESETS / sizeof PRESETS[0]))
 #define DEFAULT_PRESET 4
