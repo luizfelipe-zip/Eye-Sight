@@ -31,13 +31,14 @@ jobs:
         run: |
           cd build
           zip -r EyeSight-Instalador.zip EyeSight-Instalador
+          zip -r EyeSight-Desinstalador.zip EyeSight-Desinstalador
 
       - uses: actions/upload-artifact@v4
         with:
           name: EyeSight
           path: |
-            build/EyeSight.exe
             build/EyeSight-Instalador.zip
+            build/EyeSight-Desinstalador.zip
 
       - name: Substituir release existente da mesma versão
         if: inputs.version != ''
@@ -53,6 +54,6 @@ jobs:
           name: Eye Sight ${{ inputs.version || github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: |
-            build/EyeSight.exe
             build/EyeSight-Instalador.zip
+            build/EyeSight-Desinstalador.zip
           generate_release_notes: true
