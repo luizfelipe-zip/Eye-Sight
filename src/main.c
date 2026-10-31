@@ -58,6 +58,7 @@
 #define TIMER_CURSOR 5
 #define CURSOR_DIM_DEFAULT 4
 #define CURSOR_WARM_DEFAULT 6
+#define CURSOR_TEX_DEFAULT 100
 #define IDM_STARTUP 101
 #define IDM_CAPTURE 102
 #define IDM_EXIT 103
@@ -109,7 +110,7 @@ static float warm_kelvin(int v);
 
 // configuração (lembrada no registro)
 static int g_value, g_last_on = 40, g_preset, g_warm;
-static int g_cur_dim, g_cur_warm; // ajuste fino do cursor (%), só pelo registro
+static int g_cur_dim, g_cur_warm, g_cur_tex; // ajuste fino do cursor (%), só pelo registro
 static BOOL g_hide_capture = TRUE, g_cursor_grain = TRUE;
 
 // tema
@@ -596,7 +597,7 @@ static void add_tray(void)
 // O Windows desenha o cursor acima de qualquer janela, até da faixa uiAccess, e fora do filtro de
 // cor da Luz quente, então nem a camada nem o filtro chegam nele. Em vez disso, os cursores do
 // sistema são trocados por cópias com o mesmo grão e o mesmo tom quente aplicados (SetSystemCursor).
-// SPI_SETCURSORS devolve os originais do esquema do usuário. Os animados viram um .ani temporário
+// Os originais são lidos dos arquivos do esquema do usuário e voltam ao desligar. Os animados viram um .ani temporário
 // com todos os quadros, e os monocromáticos que invertem o fundo (o cursor de texto padrão) ganham
 // cor: o traço fica preto com contorno branco, para continuar visível em qualquer fundo.
 typedef struct { int w, h; DWORD hx, hy; uint32_t *px; } CursorFrame; // px: BGRA, alpha não premultiplicado
@@ -618,6 +619,36 @@ static HCURSOR(WINAPI *p_GetCursorFrameInfo)(HCURSOR, DWORD, DWORD, DWORD *, DWO
 static HKEY g_cur_key;
 static HANDLE g_cur_event;
 
+// Cursor do esquema do usuário a partir do arquivo indicado no registro (NULL se for o padrão)
+static HCURSOR load_scheme_cursor(const wchar_t *name)
+{
+    wchar_t raw[MAX_PATH], path[MAX_PATH];
+    DWORD sz = sizeof raw, type;
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Cursors", 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return NULL;
+    LONG r = RegQueryValueExW(k, name, NULL, &type, (BYTE *)raw, &sz);
+    RegCloseKey(k);
+    if (r != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || sz < 4)
+        return NULL;
+    raw[sz / 2 < MAX_PATH ? sz / 2 : MAX_PATH - 1] = 0;
+    if (!ExpandEnvironmentStringsW(raw, path, MAX_PATH))
+        return NULL;
+    return LoadCursorFromFileW(path);
+}
+
+// Volta ao esquema do usuário. O SPI_SETCURSORS chamado pela versão uiAccess devolve os cursores
+// padrão do Windows, e não os do esquema, então os que têm arquivo são recolocados um a um.
+static void reload_scheme_cursors(void)
+{
+    SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0);
+    for (size_t i = 0; i < MAX_CURSORS; i++) {
+        HCURSOR c = load_scheme_cursor(CURSOR_NAMES[i]);
+        if (c && !SetSystemCursor(c, CURSOR_IDS[i])) // o sistema passa a ser dono do cursor
+            DestroyCursor(c);
+    }
+}
+
 static void free_cursor_bases(void)
 {
     for (int i = 0; i < g_ncur; i++) {
@@ -632,7 +663,7 @@ static void free_cursor_bases(void)
 static void restore_cursors(void)
 {
     if (g_cur_applied)
-        SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0);
+        reload_scheme_cursors();
     g_cur_applied = FALSE;
     free_cursor_bases(); // ao religar, copia de novo o esquema que estiver em uso
 }
@@ -706,24 +737,6 @@ static BOOL read_cursor_frame(HDC dc, HCURSOR c, CursorFrame *f)
         DeleteObject(ii.hbmColor);
     DeleteObject(ii.hbmMask);
     return ok;
-}
-
-// Cursor do esquema do usuário a partir do arquivo indicado no registro (NULL se for o padrão)
-static HCURSOR load_scheme_cursor(const wchar_t *name)
-{
-    wchar_t raw[MAX_PATH], path[MAX_PATH];
-    DWORD sz = sizeof raw, type;
-    HKEY k;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Cursors", 0, KEY_READ, &k) != ERROR_SUCCESS)
-        return NULL;
-    LONG r = RegQueryValueExW(k, name, NULL, &type, (BYTE *)raw, &sz);
-    RegCloseKey(k);
-    if (r != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || sz < 4)
-        return NULL;
-    raw[sz / 2 < MAX_PATH ? sz / 2 : MAX_PATH - 1] = 0;
-    if (!ExpandEnvironmentStringsW(raw, path, MAX_PATH))
-        return NULL;
-    return LoadCursorFromFileW(path);
 }
 
 static void load_cursor_bases(void)
@@ -928,7 +941,7 @@ static void apply_cursor_grain(void)
     }
     if (g_ncur < 0)
         load_cursor_bases();
-    float t = g_value / 100.0f, warm[3];
+    float t = g_value / 100.0f * g_cur_tex / 100.0f, warm[3]; // CursorTexture: força do grão no cursor
     // o cursor fica isolado por um contorno preto e o olho o vê mais claro que a tela em volta;
     // CursorDim escurece e CursorWarm esquenta só o cursor para compensar
     int w = g_warm ? g_warm + g_cur_warm : 0;
@@ -960,6 +973,9 @@ static void load_cursor_tuning(void)
         g_cur_dim = CURSOR_DIM_DEFAULT;
     if (g_cur_warm > 50)
         g_cur_warm = CURSOR_WARM_DEFAULT;
+    g_cur_tex = (int)cfg_get(L"CursorTexture", CURSOR_TEX_DEFAULT);
+    if (g_cur_tex > 250)
+        g_cur_tex = CURSOR_TEX_DEFAULT;
 }
 
 // junta várias mudanças seguidas (arrastar o slider) numa troca só de cursores
@@ -1751,7 +1767,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     ChangeWindowMessageFilterEx(g_main, WM_SETTINGCHANGE, MSGFLT_ALLOW, NULL); // troca de esquema de cursores e de tema
     create_flyout();
     rebuild_overlays();
-    SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0); // tira o grão que tenha ficado de uma execução interrompida
+    reload_scheme_cursors(); // tira o grão que tenha ficado de uma execução interrompida
     cursor_scheme_changed(); // começa a observar o esquema de cursores
     apply_cursor_grain();
     apply_warmth();
