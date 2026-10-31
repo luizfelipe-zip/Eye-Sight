@@ -56,6 +56,7 @@
 #define TIMER_SAVE 3
 #define TIMER_ANIM 4
 #define TIMER_CURSOR 5
+#define TIMER_APPCURSOR 6
 #define CURSOR_DIM_DEFAULT 4
 #define CURSOR_WARM_DEFAULT 6
 #define CURSOR_TEX_DEFAULT 100
@@ -990,7 +991,37 @@ typedef struct { float t[5][5]; } MagColorEffect;
 static BOOL(WINAPI *p_MagInitialize)(void);
 static BOOL(WINAPI *p_MagUninitialize)(void);
 static BOOL(WINAPI *p_MagSetFullscreenColorEffect)(MagColorEffect *);
+static BOOL(WINAPI *p_MagShowSystemCursor)(BOOL);
 static BOOL g_mag_on;
+static int g_mag_refs; // a Luz quente e o cursor dos programas usam a mesma sessão da Magnification API
+
+static BOOL mag_acquire(void)
+{
+    if (!p_MagSetFullscreenColorEffect) {
+        HMODULE m = LoadLibraryExW(L"magnification.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!m)
+            return FALSE;
+        p_MagInitialize = (BOOL(WINAPI *)(void))(void *)GetProcAddress(m, "MagInitialize");
+        p_MagUninitialize = (BOOL(WINAPI *)(void))(void *)GetProcAddress(m, "MagUninitialize");
+        p_MagShowSystemCursor = (BOOL(WINAPI *)(BOOL))(void *)GetProcAddress(m, "MagShowSystemCursor");
+        p_MagSetFullscreenColorEffect =
+            (BOOL(WINAPI *)(MagColorEffect *))(void *)GetProcAddress(m, "MagSetFullscreenColorEffect");
+        if (!p_MagInitialize || !p_MagUninitialize || !p_MagSetFullscreenColorEffect) {
+            p_MagSetFullscreenColorEffect = NULL;
+            return FALSE;
+        }
+    }
+    if (g_mag_refs == 0 && !p_MagInitialize())
+        return FALSE;
+    g_mag_refs++;
+    return TRUE;
+}
+
+static void mag_release(void)
+{
+    if (g_mag_refs > 0 && --g_mag_refs == 0)
+        p_MagUninitialize();
+}
 
 // Cor de um corpo negro a k kelvins (aproximação de Tanner Helland), normalizada para 6500 K.
 static void kelvin_rgb(float k, float rgb[3])
@@ -1013,22 +1044,7 @@ static float warm_kelvin(int v)
 static void apply_warmth(void)
 {
     if (!g_mag_on) {
-        if (g_warm == 0)
-            return;
-        if (!p_MagSetFullscreenColorEffect) {
-            HMODULE m = LoadLibraryExW(L"magnification.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-            if (!m)
-                return;
-            p_MagInitialize = (BOOL(WINAPI *)(void))(void *)GetProcAddress(m, "MagInitialize");
-            p_MagUninitialize = (BOOL(WINAPI *)(void))(void *)GetProcAddress(m, "MagUninitialize");
-            p_MagSetFullscreenColorEffect =
-                (BOOL(WINAPI *)(MagColorEffect *))(void *)GetProcAddress(m, "MagSetFullscreenColorEffect");
-            if (!p_MagInitialize || !p_MagUninitialize || !p_MagSetFullscreenColorEffect) {
-                p_MagSetFullscreenColorEffect = NULL;
-                return;
-            }
-        }
-        if (!p_MagInitialize())
+        if (g_warm == 0 || !mag_acquire())
             return;
         g_mag_on = TRUE;
     }
@@ -1041,9 +1057,176 @@ static void apply_warmth(void)
     e.t[3][3] = e.t[4][4] = 1.0f;
     p_MagSetFullscreenColorEffect(&e);
     if (g_warm == 0) {
-        p_MagUninitialize();
+        mag_release();
         g_mag_on = FALSE;
     }
+}
+
+// ---------------------------------------------------------------- cursores dos programas
+
+// Navegadores e outros programas desenham alguns cursores com imagens próprias (arrastar, ajustar
+// a largura de painéis, cursores de páginas), e o SetSystemCursor não alcança esses. Quando um deles
+// aparece, o cursor de verdade é escondido (MagShowSystemCursor) e uma cópia é desenhada numa
+// janela logo abaixo da textura, que recebe o grão e a Luz quente como o resto da tela.
+static HWND g_cw;
+static HDC g_cw_dc;
+static HBITMAP g_cw_bmp, g_cw_old;
+static BOOL g_sw_on;
+static HCURSOR g_sw_cur, g_sys_cur[MAX_CURSORS];
+static DWORD g_sw_hx, g_sw_hy;
+static HHOOK g_mouse_hook;
+
+static BOOL is_system_cursor(HCURSOR c)
+{
+    for (size_t i = 0; i < MAX_CURSORS; i++) {
+        if (!g_sys_cur[i])
+            g_sys_cur[i] = LoadCursorW(NULL, MAKEINTRESOURCEW(CURSOR_IDS[i])); // o handle não muda com SetSystemCursor
+        if (c == g_sys_cur[i])
+            return TRUE;
+    }
+    return FALSE;
+}
+
+// põe a cópia logo abaixo da textura do monitor onde o mouse está
+static void place_app_cursor(POINT pt, UINT flags)
+{
+    HWND after = HWND_TOPMOST;
+    for (int i = 0; i < g_novl; i++)
+        if (IsWindowVisible(g_ov[i].hwnd) && pt.x >= g_ov[i].x && pt.y >= g_ov[i].y && pt.x < g_ov[i].x + g_ov[i].w &&
+            pt.y < g_ov[i].y + g_ov[i].h + 1)
+            after = g_ov[i].hwnd;
+    SetWindowPos(g_cw, after, pt.x - (int)g_sw_hx, pt.y - (int)g_sw_hy, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | flags);
+}
+
+static LRESULT CALLBACK mouse_hook(int code, WPARAM wp, LPARAM lp)
+{
+    if (code == HC_ACTION && wp == WM_MOUSEMOVE && g_sw_on)
+        SetWindowPos(g_cw, NULL, ((MSLLHOOKSTRUCT *)lp)->pt.x - (int)g_sw_hx, ((MSLLHOOKSTRUCT *)lp)->pt.y - (int)g_sw_hy, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    return CallNextHookEx(NULL, code, wp, lp);
+}
+
+static BOOL draw_app_cursor(HCURSOR c, POINT pt)
+{
+    CursorFrame f;
+    HDC sdc = GetDC(NULL);
+    BOOL ok = read_cursor_frame(sdc, c, &f);
+    ReleaseDC(NULL, sdc);
+    if (!ok)
+        return FALSE;
+    if (!g_cw) {
+        DWORD ex = WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
+        if (g_create_in_band)
+            g_cw = g_create_in_band(ex, MAKEINTATOM(g_overlay_atom), L"", WS_POPUP, 0, 0, 1, 1, NULL, NULL, g_inst, NULL,
+                                    ZBID_UIACCESS);
+        if (!g_cw)
+            g_cw = CreateWindowExW(ex, CLS_OVERLAY, L"", WS_POPUP, 0, 0, 1, 1, NULL, NULL, g_inst, NULL);
+        if (!g_cw) {
+            free(f.px);
+            return FALSE;
+        }
+        SetPropW(g_cw, L"NonRudeHWND", (HANDLE)(INT_PTR)TRUE);
+        SetWindowDisplayAffinity(g_cw, WDA_EXCLUDEFROMCAPTURE); // quem tira print desenha o próprio cursor
+        g_cw_dc = CreateCompatibleDC(NULL);
+    }
+    // a textura da tela já passa por cima; CursorTexture acima de 100 soma o resto no próprio cursor
+    float extra = g_value / 100.0f * (g_cur_tex - 100) / 100.0f, one[3] = {1, 1, 1};
+    uint32_t *bits;
+    BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), f.w, -f.h, 1, 32, BI_RGB}};
+    HBITMAP bmp = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    if (bmp) {
+        if (extra > 0)
+            grain_cursor_frame(&f, 0x5eed, extra, one, bits);
+        else
+            memcpy(bits, f.px, (size_t)f.w * f.h * 4);
+        for (int k = 0; k < f.w * f.h; k++) { // UpdateLayeredWindow quer alpha pré-multiplicado
+            uint32_t p = bits[k], A = p >> 24;
+            bits[k] = A << 24 | ((p >> 16 & 255) * A / 255) << 16 | ((p >> 8 & 255) * A / 255) << 8 | (p & 255) * A / 255;
+        }
+        GdiFlush();
+        if (g_cw_bmp) {
+            SelectObject(g_cw_dc, g_cw_old);
+            DeleteObject(g_cw_bmp);
+        }
+        g_cw_bmp = bmp;
+        g_cw_old = SelectObject(g_cw_dc, bmp);
+        g_sw_hx = f.hx;
+        g_sw_hy = f.hy;
+        POINT dst = {pt.x - (int)f.hx, pt.y - (int)f.hy}, src = {0, 0};
+        SIZE sz = {f.w, f.h};
+        BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(g_cw, NULL, &dst, &sz, g_cw_dc, &src, 0, &bf, ULW_ALPHA);
+    }
+    free(f.px);
+    return bmp != NULL;
+}
+
+static void app_cursor_off(void)
+{
+    if (!g_sw_on)
+        return;
+    p_MagShowSystemCursor(TRUE);
+    mag_release();
+    if (g_mouse_hook)
+        UnhookWindowsHookEx(g_mouse_hook);
+    g_mouse_hook = NULL;
+    ShowWindow(g_cw, SW_HIDE);
+    g_sw_on = FALSE;
+    g_sw_cur = NULL;
+}
+
+// chamado a cada 16 ms enquanto a textura no cursor estiver ligada
+static void track_app_cursor(void)
+{
+    CURSORINFO ci = {sizeof ci};
+    if (!g_cursor_grain || (g_value == 0 && g_warm == 0) || !GetCursorInfo(&ci)) {
+        app_cursor_off();
+        return;
+    }
+    // sem cursor: o programa o escondeu (digitando, vídeo em tela cheia); depois de meio segundo
+    // devolve o cursor do sistema, para nunca ficar preso na cópia
+    static int hidden;
+    if (!ci.hCursor) {
+        if (++hidden > 30)
+            app_cursor_off();
+        return;
+    }
+    hidden = 0;
+    if (is_system_cursor(ci.hCursor)) {
+        app_cursor_off();
+        return;
+    }
+    if (ci.hCursor == g_sw_cur && g_sw_on)
+        return;
+    if (!g_sw_on) {
+        if (!mag_acquire())
+            return;
+        if (!p_MagShowSystemCursor) {
+            mag_release();
+            return;
+        }
+    }
+    if (!draw_app_cursor(ci.hCursor, ci.ptScreenPos)) {
+        if (!g_sw_on)
+            mag_release();
+        return;
+    }
+    if (!g_sw_on) {
+        p_MagShowSystemCursor(FALSE);
+        g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse_hook, g_inst, 0);
+        g_sw_on = TRUE;
+    }
+    g_sw_cur = ci.hCursor;
+    place_app_cursor(ci.ptScreenPos, SWP_SHOWWINDOW);
+}
+
+// se o programa travar com o cursor escondido, devolve o cursor antes de fechar
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *e)
+{
+    (void)e;
+    if (g_sw_on && p_MagShowSystemCursor)
+        p_MagShowSystemCursor(TRUE);
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 static void set_warm(int v)
@@ -1612,6 +1795,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hwnd, TIMER_DISPLAY);
             if (layout_changed())
                 rebuild_overlays();
+        } else if (wp == TIMER_APPCURSOR) {
+            track_app_cursor();
         } else if (wp == TIMER_CURSOR) {
             KillTimer(hwnd, TIMER_CURSOR);
             apply_cursor_grain();
@@ -1645,6 +1830,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_DESTROY:
         save_config();
+        app_cursor_off();
         restore_cursors();
         if (g_warm > 0) {
             g_warm = 0;
@@ -1773,6 +1959,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     apply_warmth();
     add_tray();
     SetTimer(g_main, TIMER_TOPMOST, 2000, NULL);
+    SetTimer(g_main, TIMER_APPCURSOR, 16, NULL);
+    SetUnhandledExceptionFilter(crash_filter);
 
     // aberto manualmente pela primeira vez: mostra o painel para o usuário achar o app
     if (first_run && !wcsstr(cmdline, L"--tray"))
