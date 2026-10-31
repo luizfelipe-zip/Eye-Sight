@@ -7,10 +7,12 @@ Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](h
 ### Corrigido
 - Esquemas de cursores personalizados: ao trocar o esquema, o Eye Sight continuava aplicando a textura nos cursores antigos e eles tomavam o lugar dos novos. O aviso de troca de esquema não chegava à versão instalada, que é protegida para cobrir o menu Iniciar. Agora ele observa o esquema no registro e também aceita o aviso.
 - Ao desmarcar e marcar de novo *Textura e Luz quente no cursor*, os cursores são copiados outra vez do esquema em uso.
+- Os cursores do esquema são lidos direto dos arquivos indicados no registro e recolocados ao desligar a textura. Pedir ao Windows para recarregar o esquema a partir da versão instalada devolvia os cursores padrão dele.
 
 ### Adicionado
 - Textura e Luz quente também nos cursores animados (ocupado e trabalhando em segundo plano), em todos os quadros.
 - Cursores que invertem a cor do fundo, como o cursor de texto padrão do Windows, agora recebem a textura: ficam pretos com contorno branco.
+- Ajuste avançado `CursorTexture` (DWORD em `HKCU\Software\EyeSight`, 100 = mesma força da tela, até 250) para deixar a textura do cursor mais forte. `EyeSight.exe --reload-cursor` aplica sem reiniciar.
 
 ## [1.2.0] - 2026-10-26
 
