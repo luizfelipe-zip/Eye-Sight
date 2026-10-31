@@ -603,6 +603,10 @@ typedef struct { int w, h; DWORD hx, hy; uint32_t *px; } CursorFrame; // px: BGR
 typedef struct { DWORD id; int n; CursorFrame *f; DWORD *rate; } CursorBase; // rate em 1/60 s, por quadro
 static const DWORD CURSOR_IDS[] = {32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644,
                                    32645, 32646, 32648, 32649, 32650, 32651, 32671, 32672};
+// nome de cada um em HKCU\Control Panel\Cursors, na mesma ordem
+static const wchar_t *const CURSOR_NAMES[] = {L"Arrow", L"IBeam", L"Wait", L"Crosshair", L"UpArrow", L"SizeNWSE",
+                                              L"SizeNESW", L"SizeWE", L"SizeNS", L"SizeAll", L"No", L"Hand",
+                                              L"AppStarting", L"Help", L"Pin", L"Person"};
 #define MAX_CURSORS (sizeof CURSOR_IDS / sizeof CURSOR_IDS[0])
 #define MAX_FRAMES 256
 static CursorBase g_cur[MAX_CURSORS];
@@ -704,6 +708,24 @@ static BOOL read_cursor_frame(HDC dc, HCURSOR c, CursorFrame *f)
     return ok;
 }
 
+// Cursor do esquema do usuário a partir do arquivo indicado no registro (NULL se for o padrão)
+static HCURSOR load_scheme_cursor(const wchar_t *name)
+{
+    wchar_t raw[MAX_PATH], path[MAX_PATH];
+    DWORD sz = sizeof raw, type;
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Cursors", 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return NULL;
+    LONG r = RegQueryValueExW(k, name, NULL, &type, (BYTE *)raw, &sz);
+    RegCloseKey(k);
+    if (r != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || sz < 4)
+        return NULL;
+    raw[sz / 2 < MAX_PATH ? sz / 2 : MAX_PATH - 1] = 0;
+    if (!ExpandEnvironmentStringsW(raw, path, MAX_PATH))
+        return NULL;
+    return LoadCursorFromFileW(path);
+}
+
 static void load_cursor_bases(void)
 {
     // recarrega o esquema do usuário para nunca copiar um cursor que já tem grão
@@ -714,7 +736,10 @@ static void load_cursor_bases(void)
     g_ncur = 0;
     HDC dc = GetDC(NULL);
     for (size_t i = 0; i < MAX_CURSORS; i++) {
-        HCURSOR c = LoadCursorW(NULL, MAKEINTRESOURCEW(CURSOR_IDS[i]));
+        // lê direto do arquivo do esquema: o SPI_SETCURSORS feito pela versão uiAccess pode
+        // carregar os cursores padrão do Windows em vez dos do usuário
+        HCURSOR own = load_scheme_cursor(CURSOR_NAMES[i]);
+        HCURSOR c = own ? own : LoadCursorW(NULL, MAKEINTRESOURCEW(CURSOR_IDS[i]));
         if (!c)
             continue;
         DWORD rate = 0, steps = 1;
@@ -732,6 +757,8 @@ static void load_cursor_bases(void)
                 break;
             b.rate[b.n++] = r ? r : 10;
         }
+        if (own)
+            DestroyCursor(own);
         if (b.n == (int)steps) {
             g_cur[g_ncur++] = b;
         } else {
