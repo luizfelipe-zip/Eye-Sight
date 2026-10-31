@@ -2,6 +2,16 @@
 
 Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento segue o [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.2.1] - 2026-10-31
+
+### Corrigido
+- Esquemas de cursores personalizados: ao trocar o esquema, o Eye Sight continuava aplicando a textura nos cursores antigos e eles tomavam o lugar dos novos. O aviso de troca de esquema não chegava à versão instalada, que é protegida para cobrir o menu Iniciar. Agora ele observa o esquema no registro e também aceita o aviso.
+- Ao desmarcar e marcar de novo *Textura e Luz quente no cursor*, os cursores são copiados outra vez do esquema em uso.
+
+### Adicionado
+- Textura e Luz quente também nos cursores animados (ocupado e trabalhando em segundo plano), em todos os quadros.
+- Cursores que invertem a cor do fundo, como o cursor de texto padrão do Windows, agora recebem a textura: ficam pretos com contorno branco.
+
 ## [1.2.0] - 2026-10-26
 
 ### Adicionado
@@ -43,6 +53,7 @@ Todas as mudanças relevantes do projeto. O formato segue o [Keep a Changelog](h
 - Instalador opcional (uiAccess com assinatura local) para a textura cobrir o menu Iniciar e a barra.
 - Build automático e publicação de releases pelo GitHub Actions.
 
+[1.2.1]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.2.1
 [1.2.0]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.2.0
 [1.1.0]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.1.0
 [1.0.1]: https://github.com/luizfelipe-zip/Eye-Sight/releases/tag/v1.0.1
