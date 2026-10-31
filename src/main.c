@@ -595,65 +595,302 @@ static void add_tray(void)
 
 // O Windows desenha o cursor acima de qualquer janela, até da faixa uiAccess, e fora do filtro de
 // cor da Luz quente, então nem a camada nem o filtro chegam nele. Em vez disso, os cursores do
-// sistema são trocados por cópias com o mesmo grão e o mesmo tom quente aplicados (SetSystemCursor). SPI_SETCURSORS devolve os originais do esquema do usuário.
-// Os cursores animados (ocupado, trabalhando em segundo plano) e os monocromáticos que invertem a
-// cor do fundo ficam como estão.
-typedef struct { DWORD id; int w, h; DWORD hx, hy; uint32_t *px; } CursorBase; // px: BGRA, alpha não premultiplicado
-static const DWORD CURSOR_IDS[] = {32512, 32513, 32515, 32516, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32651, 32671, 32672};
+// sistema são trocados por cópias com o mesmo grão e o mesmo tom quente aplicados (SetSystemCursor).
+// SPI_SETCURSORS devolve os originais do esquema do usuário. Os animados viram um .ani temporário
+// com todos os quadros, e os monocromáticos que invertem o fundo (o cursor de texto padrão) ganham
+// cor: o traço fica preto com contorno branco, para continuar visível em qualquer fundo.
+typedef struct { int w, h; DWORD hx, hy; uint32_t *px; } CursorFrame; // px: BGRA, alpha não premultiplicado
+typedef struct { DWORD id; int n; CursorFrame *f; DWORD *rate; } CursorBase; // rate em 1/60 s, por quadro
+static const DWORD CURSOR_IDS[] = {32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644,
+                                   32645, 32646, 32648, 32649, 32650, 32651, 32671, 32672};
 #define MAX_CURSORS (sizeof CURSOR_IDS / sizeof CURSOR_IDS[0])
+#define MAX_FRAMES 256
 static CursorBase g_cur[MAX_CURSORS];
 static int g_ncur = -1; // -1: originais ainda não lidos
 static BOOL g_cur_applied;
+// quadro N de um cursor animado (não documentada, mas existe no user32 desde o XP)
+static HCURSOR(WINAPI *p_GetCursorFrameInfo)(HCURSOR, DWORD, DWORD, DWORD *, DWORD *);
+
+static HKEY g_cur_key;
+static HANDLE g_cur_event;
+
+static void free_cursor_bases(void)
+{
+    for (int i = 0; i < g_ncur; i++) {
+        for (int j = 0; j < g_cur[i].n; j++)
+            free(g_cur[i].f[j].px);
+        free(g_cur[i].f);
+        free(g_cur[i].rate);
+    }
+    g_ncur = -1;
+}
 
 static void restore_cursors(void)
 {
     if (g_cur_applied)
         SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0);
     g_cur_applied = FALSE;
+    free_cursor_bases(); // ao religar, copia de novo o esquema que estiver em uso
 }
 
-static void free_cursor_bases(void)
+// Avisa quando o esquema de cursores muda no registro. O WM_SETTINGCHANGE de quem troca o
+// esquema nem sempre chega: o Windows bloqueia mensagens de programas comuns para a versão
+// uiAccess, e um script pode trocar os cursores sem avisar ninguém.
+static BOOL cursor_scheme_changed(void)
 {
-    for (int i = 0; i < g_ncur; i++)
-        free(g_cur[i].px);
-    g_ncur = -1;
+    if (!g_cur_key && RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Cursors", 0, KEY_NOTIFY, &g_cur_key) != ERROR_SUCCESS)
+        return FALSE;
+    if (!g_cur_event && !(g_cur_event = CreateEventW(NULL, FALSE, TRUE, NULL)))
+        return FALSE;
+    if (WaitForSingleObject(g_cur_event, 0) != WAIT_OBJECT_0)
+        return FALSE;
+    RegNotifyChangeKeyValue(g_cur_key, TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET, g_cur_event, TRUE);
+    return TRUE;
+}
+
+// Lê um quadro como BGRA com alpha. Cursores sem alpha usam a máscara AND; os pixels que invertem
+// o fundo (máscara 1 com cor) ficam pretos e ganham um contorno branco.
+static BOOL read_cursor_frame(HDC dc, HCURSOR c, CursorFrame *f)
+{
+    ICONINFO ii;
+    if (!GetIconInfo(c, &ii))
+        return FALSE;
+    BOOL ok = FALSE;
+    BITMAP bm;
+    if (GetObjectW(ii.hbmColor ? ii.hbmColor : ii.hbmMask, sizeof bm, &bm)) {
+        int w = bm.bmWidth, h = ii.hbmColor ? bm.bmHeight : bm.bmHeight / 2; // monocromático: AND em cima, XOR embaixo
+        int mh = ii.hbmColor ? h : h * 2;
+        BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB}};
+        BITMAPINFO mi = {{sizeof(BITMAPINFOHEADER), w, -mh, 1, 32, BI_RGB}};
+        uint32_t *px = calloc((size_t)w * h, 4), *mask = malloc((size_t)w * mh * 4);
+        if (w > 0 && h > 0 && px && mask && GetDIBits(dc, ii.hbmMask, 0, mh, mask, &mi, DIB_RGB_COLORS) == mh &&
+            (!ii.hbmColor || GetDIBits(dc, ii.hbmColor, 0, h, px, &bi, DIB_RGB_COLORS) == h)) {
+            BOOL has_alpha = FALSE;
+            for (int k = 0; ii.hbmColor && k < w * h && !has_alpha; k++)
+                has_alpha = (px[k] >> 24) != 0;
+            if (!has_alpha) {
+                // inv[k]: o pixel invertia o fundo (reaproveita a área da máscara)
+                BYTE *inv = (BYTE *)mask;
+                BOOL inverts = FALSE;
+                for (int k = 0; k < w * h; k++) {
+                    uint32_t and = mask[k] & 0xFFFFFF, xor = (ii.hbmColor ? px[k] : mask[w * h + k]) & 0xFFFFFF;
+                    px[k] = !and ? 0xFF000000u | xor : xor ? 0xFF000000u : 0; // quem invertia vira preto
+                    inv[k] = and && xor;
+                    inverts |= inv[k];
+                }
+                // contorno branco em volta do que antes invertia o fundo
+                for (int y = 0; inverts && y < h; y++)
+                    for (int x = 0; x < w; x++) {
+                        BOOL edge = FALSE;
+                        for (int dy = -1; dy <= 1; dy++)
+                            for (int dx = -1; dx <= 1; dx++) {
+                                int xx = x + dx, yy = y + dy;
+                                edge |= xx >= 0 && yy >= 0 && xx < w && yy < h && inv[yy * w + xx];
+                            }
+                        if (edge && !px[y * w + x])
+                            px[y * w + x] = 0xFFFFFFFFu;
+                    }
+            }
+            *f = (CursorFrame){w, h, ii.xHotspot, ii.yHotspot, px};
+            px = NULL;
+            ok = TRUE;
+        }
+        free(px);
+        free(mask);
+    }
+    if (ii.hbmColor)
+        DeleteObject(ii.hbmColor);
+    DeleteObject(ii.hbmMask);
+    return ok;
 }
 
 static void load_cursor_bases(void)
 {
     // recarrega o esquema do usuário para nunca copiar um cursor que já tem grão
     SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0);
+    if (!p_GetCursorFrameInfo)
+        p_GetCursorFrameInfo = (HCURSOR(WINAPI *)(HCURSOR, DWORD, DWORD, DWORD *, DWORD *))(void *)GetProcAddress(
+            GetModuleHandleW(L"user32.dll"), "GetCursorFrameInfo");
     g_ncur = 0;
     HDC dc = GetDC(NULL);
     for (size_t i = 0; i < MAX_CURSORS; i++) {
         HCURSOR c = LoadCursorW(NULL, MAKEINTRESOURCEW(CURSOR_IDS[i]));
-        ICONINFO ii;
-        if (!c || !GetIconInfo(c, &ii))
+        if (!c)
             continue;
-        BITMAP bm;
-        if (ii.hbmColor && GetObjectW(ii.hbmColor, sizeof bm, &bm)) {
-            int w = bm.bmWidth, h = bm.bmHeight;
-            BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB}};
-            uint32_t *px = malloc((size_t)w * h * 4), *mask = malloc((size_t)w * h * 4);
-            if (px && mask && GetDIBits(dc, ii.hbmColor, 0, h, px, &bi, DIB_RGB_COLORS) == h &&
-                GetDIBits(dc, ii.hbmMask, 0, h, mask, &bi, DIB_RGB_COLORS) == h) {
-                BOOL has_alpha = FALSE;
-                for (int k = 0; k < w * h && !has_alpha; k++)
-                    has_alpha = (px[k] >> 24) != 0;
-                if (!has_alpha) // cursor antigo sem alpha: a máscara diz o que é transparente
-                    for (int k = 0; k < w * h; k++)
-                        px[k] = (mask[k] & 0xFFFFFF) ? 0 : px[k] | 0xFF000000u;
-                g_cur[g_ncur++] = (CursorBase){CURSOR_IDS[i], w, h, ii.xHotspot, ii.yHotspot, px};
-                px = NULL;
-            }
-            free(px);
-            free(mask);
+        DWORD rate = 0, steps = 1;
+        if (p_GetCursorFrameInfo && !p_GetCursorFrameInfo(c, 0, 0, &rate, &steps))
+            steps = 1;
+        if (steps < 1 || steps > MAX_FRAMES)
+            steps = 1;
+        CursorBase b = {CURSOR_IDS[i], 0, calloc(steps, sizeof(CursorFrame)), calloc(steps, sizeof(DWORD))};
+        for (DWORD s = 0; b.f && b.rate && s < steps; s++) {
+            HCURSOR fc = c;
+            DWORD r = 0, n = 0;
+            if (steps > 1 && !(fc = p_GetCursorFrameInfo(c, 0, s, &r, &n)))
+                break;
+            if (!read_cursor_frame(dc, fc, &b.f[b.n]))
+                break;
+            b.rate[b.n++] = r ? r : 10;
         }
-        if (ii.hbmColor)
-            DeleteObject(ii.hbmColor);
-        DeleteObject(ii.hbmMask);
+        if (b.n == (int)steps) {
+            g_cur[g_ncur++] = b;
+        } else {
+            for (int j = 0; j < b.n; j++)
+                free(b.f[j].px);
+            free(b.f);
+            free(b.rate);
+        }
     }
     ReleaseDC(NULL, dc);
+}
+
+// Aplica o grão e a Luz quente num quadro. out recebe BGRA com alpha não premultiplicado.
+static void grain_cursor_frame(const CursorFrame *f, DWORD id, float t, const float mul[3], uint32_t *out)
+{
+    uint32_t *grain = malloc((size_t)f->w * f->h * 4);
+    if (!grain) {
+        memcpy(out, f->px, (size_t)f->w * f->h * 4);
+        return;
+    }
+    // mesma mistura da tela: grão por cima do cursor (escurece pelo alpha e soma o grão
+    // claro) e depois o filtro da Luz quente sobre tudo
+    render_grain(grain, f->w, f->h, 1.0f, 0x51ed270bu + id, &PRESETS[g_preset]);
+    for (int k = 0; k < f->w * f->h; k++) {
+        uint32_t p = f->px[k], A = p >> 24;
+        if (!A) {
+            out[k] = 0;
+            continue;
+        }
+        float ga = (grain[k] >> 24) / 255.0f * t, gv = (grain[k] & 255) * t;
+        uint32_t o = A << 24;
+        for (int sh = 0, ch = 0; sh <= 16; sh += 8, ch++) {
+            float c = (((p >> sh) & 255) * (1 - ga) + gv) * mul[ch];
+            o |= (uint32_t)(c > 255 ? 255 : c + 0.5f) << sh;
+        }
+        out[k] = o;
+    }
+    free(grain);
+}
+
+static HCURSOR make_static_cursor(const CursorFrame *f, const uint32_t *px)
+{
+    uint32_t *bits;
+    BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), f->w, -f->h, 1, 32, BI_RGB}};
+    HBITMAP color = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    // máscara AND: 1 onde o cursor é transparente (usada por quem ignora o alpha)
+    int stride = (f->w + 15) / 16 * 2;
+    BYTE *maskbits = calloc((size_t)stride * f->h, 1);
+    HCURSOR c = NULL;
+    if (color && maskbits) {
+        memcpy(bits, px, (size_t)f->w * f->h * 4);
+        for (int y = 0; y < f->h; y++)
+            for (int x = 0; x < f->w; x++)
+                if (!(px[y * f->w + x] >> 24))
+                    maskbits[y * stride + x / 8] |= (BYTE)(0x80 >> (x % 8));
+        GdiFlush();
+        HBITMAP mask = CreateBitmap(f->w, f->h, 1, 1, maskbits);
+        if (mask) {
+            ICONINFO ii = {FALSE, f->hx, f->hy, mask, color};
+            c = CreateIconIndirect(&ii);
+            DeleteObject(mask);
+        }
+    }
+    free(maskbits);
+    if (color)
+        DeleteObject(color);
+    return c;
+}
+
+typedef struct { BYTE *p; size_t n, cap; BOOL bad; } Bytes;
+
+static void put(Bytes *b, const void *d, size_t n)
+{
+    if (b->n + n > b->cap) {
+        size_t cap = (b->n + n) * 2;
+        BYTE *p = realloc(b->p, cap);
+        if (!p) {
+            b->bad = TRUE;
+            return;
+        }
+        b->p = p;
+        b->cap = cap;
+    }
+    memcpy(b->p + b->n, d, n);
+    b->n += n;
+}
+static void put32(Bytes *b, uint32_t v) { put(b, &v, 4); }
+static void put16(Bytes *b, uint16_t v) { put(b, &v, 2); }
+
+// Grava um .cur de uma imagem 32 bpp (XOR com alpha + máscara AND), como os do Windows.
+static void put_cur(Bytes *b, const CursorFrame *f, const uint32_t *px)
+{
+    uint32_t mstride = (f->w + 31) / 32 * 4, xor = (uint32_t)f->w * f->h * 4, and = mstride * f->h;
+    put16(b, 0), put16(b, 2), put16(b, 1); // ICONDIR: cursor, 1 imagem
+    BYTE wh[4] = {(BYTE)(f->w >= 256 ? 0 : f->w), (BYTE)(f->h >= 256 ? 0 : f->h), 0, 0};
+    put(b, wh, 4);
+    put16(b, (uint16_t)f->hx), put16(b, (uint16_t)f->hy);
+    put32(b, 40 + xor + and), put32(b, 22);
+    BITMAPINFOHEADER h = {sizeof h, f->w, f->h * 2, 1, 32, BI_RGB, xor + and};
+    put(b, &h, sizeof h);
+    for (int y = f->h - 1; y >= 0; y--) // de baixo para cima
+        put(b, px + (size_t)y * f->w, (size_t)f->w * 4);
+    BYTE *row = calloc(mstride, 1);
+    for (int y = f->h - 1; row && y >= 0; y--) {
+        memset(row, 0, mstride);
+        for (int x = 0; x < f->w; x++)
+            if (!(px[y * f->w + x] >> 24))
+                row[x / 8] |= (BYTE)(0x80 >> (x % 8));
+        put(b, row, mstride);
+    }
+    if (!row)
+        b->bad = TRUE;
+    free(row);
+}
+
+// Cursores animados só podem ser criados a partir de um .ani, então monta um temporário.
+static HCURSOR make_animated_cursor(const CursorBase *cb, uint32_t *const *px)
+{
+    Bytes b = {0};
+    put(&b, "RIFF", 4), put32(&b, 0), put(&b, "ACON", 4);
+    put(&b, "anih", 4), put32(&b, 36);
+    uint32_t anih[9] = {36, (uint32_t)cb->n, (uint32_t)cb->n, 0, 0, 0, 0, cb->rate[0], 1}; // 1: quadros em .cur
+    put(&b, anih, sizeof anih);
+    put(&b, "rate", 4), put32(&b, (uint32_t)cb->n * 4);
+    put(&b, cb->rate, (size_t)cb->n * 4);
+    put(&b, "LIST", 4);
+    size_t list = b.n;
+    put32(&b, 0), put(&b, "fram", 4);
+    for (int i = 0; i < cb->n; i++) {
+        put(&b, "icon", 4);
+        size_t at = b.n;
+        put32(&b, 0);
+        put_cur(&b, &cb->f[i], px[i]);
+        uint32_t sz = (uint32_t)(b.n - at - 4);
+        if (!b.bad)
+            memcpy(b.p + at, &sz, 4);
+        if (sz & 1)
+            put(&b, "", 1);
+    }
+    HCURSOR c = NULL;
+    if (!b.bad) {
+        uint32_t lsz = (uint32_t)(b.n - list - 4), rsz = (uint32_t)(b.n - 8);
+        memcpy(b.p + list, &lsz, 4);
+        memcpy(b.p + 4, &rsz, 4);
+        wchar_t dir[MAX_PATH], path[MAX_PATH];
+        if (GetTempPathW(MAX_PATH, dir) && GetTempFileNameW(dir, L"eys", 0, path)) {
+            HANDLE fh = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
+            DWORD wr = 0;
+            if (fh != INVALID_HANDLE_VALUE) {
+                BOOL ok = WriteFile(fh, b.p, (DWORD)b.n, &wr, NULL) && wr == b.n;
+                CloseHandle(fh);
+                if (ok)
+                    c = LoadCursorFromFileW(path);
+            }
+            DeleteFileW(path);
+        }
+    }
+    free(b.p);
+    return c;
 }
 
 static void apply_cursor_grain(void)
@@ -673,50 +910,18 @@ static void apply_cursor_grain(void)
     float mul[3] = {warm[2] * k, warm[1] * k, warm[0] * k}; // ordem dos bytes: B, G, R
     for (int i = 0; i < g_ncur; i++) {
         CursorBase *b = &g_cur[i];
-        uint32_t *grain = malloc((size_t)b->w * b->h * 4), *bits;
-        BITMAPINFO bi = {{sizeof(BITMAPINFOHEADER), b->w, -b->h, 1, 32, BI_RGB}};
-        HBITMAP color = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
-        // máscara AND: 1 onde o cursor é transparente (usada por quem ignora o alpha)
-        int stride = (b->w + 15) / 16 * 2;
-        BYTE *maskbits = calloc((size_t)stride * b->h, 1);
-        if (maskbits)
-            for (int y = 0; y < b->h; y++)
-                for (int x = 0; x < b->w; x++)
-                    if (!(b->px[y * b->w + x] >> 24))
-                        maskbits[y * stride + x / 8] |= (BYTE)(0x80 >> (x % 8));
-        HBITMAP mask = maskbits ? CreateBitmap(b->w, b->h, 1, 1, maskbits) : NULL;
-        if (grain && color && mask) {
-            // mesma mistura da tela: grão por cima do cursor (escurece pelo alpha e soma o grão
-            // claro) e depois o filtro da Luz quente sobre tudo
-            render_grain(grain, b->w, b->h, 1.0f, 0x51ed270bu + b->id, &PRESETS[g_preset]);
-            for (int k = 0; k < b->w * b->h; k++) {
-                uint32_t p = b->px[k], A = p >> 24;
-                if (!A) {
-                    bits[k] = 0;
-                    continue;
-                }
-                float ga = (grain[k] >> 24) / 255.0f * t, gv = (grain[k] & 255) * t;
-                uint32_t o = A << 24;
-                for (int sh = 0, ch = 0; sh <= 16; sh += 8, ch++) {
-                    float c = (((p >> sh) & 255) * (1 - ga) + gv) * mul[ch];
-                    o |= (uint32_t)(c > 255 ? 255 : c + 0.5f) << sh;
-                }
-                bits[k] = o;
-            }
-            GdiFlush();
-            ICONINFO ii = {FALSE, b->hx, b->hy, mask, color};
-            HCURSOR c = CreateIconIndirect(&ii);
-            if (c && SetSystemCursor(c, b->id)) // o sistema passa a ser dono do cursor
-                g_cur_applied = TRUE;
-            else if (c)
-                DestroyCursor(c);
-        }
-        free(grain);
-        free(maskbits);
-        if (color)
-            DeleteObject(color);
-        if (mask)
-            DeleteObject(mask);
+        uint32_t *px[MAX_FRAMES] = {0};
+        BOOL ok = TRUE;
+        for (int j = 0; j < b->n && ok; j++)
+            if ((ok = (px[j] = malloc((size_t)b->f[j].w * b->f[j].h * 4)) != NULL))
+                grain_cursor_frame(&b->f[j], b->id, t, mul, px[j]);
+        HCURSOR c = !ok ? NULL : b->n == 1 ? make_static_cursor(&b->f[0], px[0]) : make_animated_cursor(b, px);
+        if (c && SetSystemCursor(c, b->id)) // o sistema passa a ser dono do cursor
+            g_cur_applied = TRUE;
+        else if (c)
+            DestroyCursor(c);
+        for (int j = 0; j < b->n; j++)
+            free(px[j]);
     }
 }
 
@@ -1371,6 +1576,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hwnd, TIMER_SAVE);
             save_config();
         } else if (wp == TIMER_TOPMOST) {
+            if (cursor_scheme_changed() && g_cur_applied) {
+                free_cursor_bases();
+                schedule_cursor_grain();
+            }
             // Outras janelas "sempre no topo" podem passar por cima. Só reordena quando
             // isso realmente aconteceu: mexer no z-order à toa faz o DWM recompor a tela
             // e pode causar piscadas.
@@ -1512,9 +1721,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     ChangeWindowMessageFilterEx(g_main, WM_SHOWFLYOUT, MSGFLT_ALLOW, NULL);
     ChangeWindowMessageFilterEx(g_main, WM_QUITAPP, MSGFLT_ALLOW, NULL);
     ChangeWindowMessageFilterEx(g_main, WM_RELOADCURSOR, MSGFLT_ALLOW, NULL);
+    ChangeWindowMessageFilterEx(g_main, WM_SETTINGCHANGE, MSGFLT_ALLOW, NULL); // troca de esquema de cursores e de tema
     create_flyout();
     rebuild_overlays();
     SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0); // tira o grão que tenha ficado de uma execução interrompida
+    cursor_scheme_changed(); // começa a observar o esquema de cursores
     apply_cursor_grain();
     apply_warmth();
     add_tray();
