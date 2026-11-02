@@ -1,6 +1,16 @@
 package br.luiz.relogiozap;
 
 import android.Manifest;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothHeadset;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothProfile;
+import android.content.ComponentName;
+import android.net.Uri;
+import android.telecom.PhoneAccount;
+import android.telecom.PhoneAccountHandle;
+import android.telecom.TelecomManager;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -39,9 +49,13 @@ public class MainActivity extends Activity {
     private File lastFile;
     private TextView log;
     private ScrollView scroll;
-    private Button btnWatch, btnPhone, btnStop, btnPlay;
+    private Button btnWatch, btnPhone, btnStop, btnPlay, btnFake;
     private final Handler main = new Handler(Looper.getMainLooper());
     private boolean waitingSco = false;
+    private TelecomManager telecom;
+    private PhoneAccountHandle account;
+    private BluetoothHeadset headset;
+    private boolean fakeCallMode = false;
 
     private final BroadcastReceiver scoReceiver = new BroadcastReceiver() {
         @Override
@@ -70,14 +84,17 @@ public class MainActivity extends Activity {
                 + "1. Relógio conectado ao Poco (ligações pelo relógio ativadas).\n"
                 + "2. Toque em \"Gravar pelo RELÓGIO\", fale perto do relógio com o celular longe, depois \"Parar\" e \"Tocar\".\n"
                 + "3. Compare com \"Gravar pelo CELULAR\".\n"
+                + "NOVO (v2): \"Chamada falsa + gravar pelo RELÓGIO\" simula uma chamada de internet para o relógio abrir o microfone.\n"
                 + "Mande um print do log abaixo.");
         title.setTextSize(15);
         root.addView(title);
 
         btnWatch = button("Gravar pelo RELÓGIO", v -> recordFromWatch());
+        btnFake = button("Chamada falsa + gravar pelo RELÓGIO", v -> fakeCallAndRecord());
         btnPhone = button("Gravar pelo CELULAR", v -> startRecording(findInput(AudioDeviceInfo.TYPE_BUILTIN_MIC), "celular"));
         btnStop = button("Parar", v -> stopRecording());
         btnPlay = button("Tocar última gravação", v -> play());
+        root.addView(btnFake);
         root.addView(btnWatch);
         root.addView(btnPhone);
         root.addView(btnStop);
@@ -99,6 +116,17 @@ public class MainActivity extends Activity {
 
         log("Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + "), "
                 + Build.MANUFACTURER + " " + Build.MODEL);
+        VoipConnectionService.logger = this::log;
+        telecom = (TelecomManager) getSystemService(TELECOM_SERVICE);
+        account = new PhoneAccountHandle(new ComponentName(this, VoipConnectionService.class), "relogiozap");
+        try {
+            telecom.registerPhoneAccount(PhoneAccount.builder(account, "Relógio Zap")
+                    .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                    .build());
+            log("Conta de chamada (self-managed) registrada.");
+        } catch (Exception e) {
+            log("ERRO ao registrar conta de chamada: " + e);
+        }
         askPermissions();
         updateButtons();
     }
@@ -115,6 +143,7 @@ public class MainActivity extends Activity {
         List<String> need = new ArrayList<>();
         need.add(Manifest.permission.RECORD_AUDIO);
         if (Build.VERSION.SDK_INT >= 31) need.add(Manifest.permission.BLUETOOTH_CONNECT);
+        need.add(Manifest.permission.MANAGE_OWN_CALLS);
         List<String> missing = new ArrayList<>();
         for (String s : need) if (checkSelfPermission(s) != PackageManager.PERMISSION_GRANTED) missing.add(s);
         if (!missing.isEmpty()) requestPermissions(missing.toArray(new String[0]), 1);
@@ -129,6 +158,7 @@ public class MainActivity extends Activity {
     }
 
     private void listDevices() {
+        logHfp();
         log("--- Entradas de áudio ---");
         for (AudioDeviceInfo d : audio.getDevices(AudioManager.GET_DEVICES_INPUTS))
             log("  " + typeName(d.getType()) + " | " + d.getProductName() + " | id " + d.getId());
@@ -137,6 +167,75 @@ public class MainActivity extends Activity {
             for (AudioDeviceInfo d : audio.getAvailableCommunicationDevices())
                 log("  " + typeName(d.getType()) + " | " + d.getProductName());
         }
+    }
+
+    private void logHfp() {
+        try {
+            if (headset == null) {
+                BluetoothAdapter ad = ((BluetoothManager) getSystemService(BLUETOOTH_SERVICE)).getAdapter();
+                if (ad == null) { log("Sem Bluetooth."); return; }
+                ad.getProfileProxy(this, new BluetoothProfile.ServiceListener() {
+                    @Override public void onServiceConnected(int p, BluetoothProfile prof) {
+                        headset = (BluetoothHeadset) prof;
+                        logHfp();
+                    }
+                    @Override public void onServiceDisconnected(int p) { headset = null; }
+                }, BluetoothProfile.HEADSET);
+                return;
+            }
+            List<BluetoothDevice> devs = headset.getConnectedDevices();
+            log("--- Perfil de chamadas (HFP) conectado: " + devs.size() + " ---");
+            for (BluetoothDevice d : devs)
+                log("  " + d.getName() + " | áudio SCO " + (headset.isAudioConnected(d) ? "ABERTO" : "fechado"));
+        } catch (SecurityException e) {
+            log("Sem permissão de dispositivos próximos para ver o HFP.");
+        }
+    }
+
+    private void fakeCallAndRecord() {
+        if (recorder != null || VoipConnectionService.current != null) return;
+        log("== Chamada falsa + gravar pelo relógio ==");
+        logHfp();
+        try {
+            if (!telecom.isOutgoingCallPermitted(account)) log("Aviso: Telecom diz que não pode iniciar chamada agora.");
+            Bundle extras = new Bundle();
+            extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account);
+            telecom.placeCall(Uri.fromParts(PhoneAccount.SCHEME_SIP, "relogio", null), extras);
+            log("placeCall enviado. Procurando o microfone do relógio por até 12 s...");
+        } catch (SecurityException e) {
+            log("ERRO de permissão ao iniciar chamada: " + e.getMessage());
+            return;
+        } catch (Exception e) {
+            log("ERRO ao iniciar chamada: " + e);
+            return;
+        }
+        fakeCallMode = true;
+        pollSco(0);
+    }
+
+    private void pollSco(int tries) {
+        main.postDelayed(() -> {
+            if (!fakeCallMode || recorder != null) return;
+            AudioDeviceInfo sco = findInput(AudioDeviceInfo.TYPE_BLUETOOTH_SCO);
+            if (sco != null) {
+                log("Microfone do relógio apareceu após ~" + (tries + 1) + " s: " + sco.getProductName());
+                logHfp();
+                startRecording(sco, "relogio");
+            } else if (tries >= 11) {
+                log("ERRO: o relógio não abriu o canal em 12 s. Encerrando a chamada falsa.");
+                logHfp();
+                listDevices();
+                endFakeCall();
+            } else {
+                pollSco(tries + 1);
+            }
+        }, 1000);
+    }
+
+    private void endFakeCall() {
+        fakeCallMode = false;
+        VoipConnectionService.FakeCall c = VoipConnectionService.current;
+        if (c != null) c.end();
     }
 
     private void recordFromWatch() {
@@ -230,6 +329,7 @@ public class MainActivity extends Activity {
     }
 
     private void releaseSco() {
+        if (fakeCallMode) { endFakeCall(); return; }
         if (Build.VERSION.SDK_INT >= 31) audio.clearCommunicationDevice();
         else audio.stopBluetoothSco();
         audio.setMode(AudioManager.MODE_NORMAL);
@@ -252,6 +352,7 @@ public class MainActivity extends Activity {
     private void updateButtons() {
         boolean rec = recorder != null;
         btnWatch.setEnabled(!rec);
+        btnFake.setEnabled(!rec);
         btnPhone.setEnabled(!rec);
         btnStop.setEnabled(rec);
         btnPlay.setEnabled(!rec);
@@ -296,6 +397,8 @@ public class MainActivity extends Activity {
         stopRecording();
         if (player != null) player.release();
         unregisterReceiver(scoReceiver);
+        endFakeCall();
+        VoipConnectionService.logger = null;
         super.onDestroy();
     }
 }

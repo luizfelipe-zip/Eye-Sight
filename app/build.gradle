@@ -7,8 +7,8 @@ android {
         applicationId 'br.luiz.relogiozap'
         minSdk 28
         targetSdk 34
-        versionCode 1
-        versionName '0.1-teste-microfone'
+        versionCode 2
+        versionName '0.2-teste-chamada-falsa'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
