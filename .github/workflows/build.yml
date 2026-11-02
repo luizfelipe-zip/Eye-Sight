@@ -26,3 +26,11 @@ jobs:
         with:
           name: relogio-zap-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publicar APK numa pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk relogio-zap-teste.apk
+          gh release delete relogio-zap-teste -y --cleanup-tag || true
+          gh release create relogio-zap-teste relogio-zap-teste.apk --prerelease --target "$GITHUB_SHA" \
+            --title "Relógio Zap - APK de teste" --notes "APK de teste do microfone do relógio (build ${GITHUB_SHA::7}). Não faz parte do Eye-Sight."
